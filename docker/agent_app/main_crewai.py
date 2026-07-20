@@ -97,23 +97,22 @@ def _resolve_llm():
 
 
 def _get_crewai_llm():
-    """Get a CrewAI-compatible LLM from the configured provider."""
-    try:
-        from langchain_openai import ChatOpenAI
-    except ImportError:
-        raise RuntimeError("langchain-openai is not installed (required by CrewAI)")
+    """Get a CrewAI-compatible LLM from the configured provider.
 
+    CrewAI resolves model strings via litellm which reads API keys from
+    env vars (OPENROUTER_API_KEY, OPENAI_API_KEY, etc.).
+    """
     cfg = _resolve_llm()
     if not cfg:
         return None
 
-    return ChatOpenAI(
-        model=cfg["model"],
-        api_key=cfg["api_key"],
-        base_url=cfg["base_url"],
-        temperature=0,
-        max_tokens=1024,
-    )
+    # Pass the model string directly — CrewAI/litellm handles LLM creation.
+    # For OpenRouter models, prefix with "openrouter/" so litellm routes correctly.
+    model = cfg["model"]
+    base_url = cfg.get("base_url", "")
+    if "openrouter.ai" in base_url and not model.startswith("openrouter/"):
+        model = f"openrouter/{model}"
+    return model
 
 
 def _get_crewai_tools():
@@ -204,6 +203,13 @@ from main import DASHBOARD_HTML
 
 @app.on_event("startup")
 async def startup():
+    # Expose secret files as env vars for litellm (reads OPENROUTER_API_KEY directly).
+    for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+        if not os.getenv(key):
+            file_path = os.getenv(f"{key}_FILE")
+            if file_path and os.path.isfile(file_path):
+                with open(file_path) as fh:
+                    os.environ[key] = fh.read().strip()
     _build_mcp()
     if MCP_MANAGER:
         await MCP_MANAGER.connect_all()

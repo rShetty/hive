@@ -99,7 +99,10 @@ class AgentClient:
         # against the local Hive instance so aiohttp gets an absolute URL.
         if target_endpoint.startswith("/"):
             if os.getenv("OPENCLAW_DEPLOY_MODE", "local") == "local":
-                _base = "http://localhost:8000"
+                from urllib.parse import urlparse
+                _configured = os.getenv("HIVE_URL") or ""
+                _port = f":{urlparse(_configured).port}" if urlparse(_configured).port else ""
+                _base = f"http://localhost{_port}" if _port else "http://localhost:8000"
             else:
                 _base = self.marketplace_url
             target_endpoint = _base.rstrip("/") + target_endpoint

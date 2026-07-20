@@ -63,7 +63,18 @@ def spawn_openclaw_agent(
     # public MARKETPLACE_URL (which may point at a different/prod host). Force
     # the agent's Hive endpoint to the local server so heartbeats, progress,
     # and completion callbacks land on the instance that deployed it.
-    hive_url = hive_url or os.getenv("OPENCLAW_LOCAL_HIVE_URL", "http://localhost:8000")
+    # Derive the URL from HIVE_URL but point it at localhost (preserving the
+    # configured port) so the agent always talks to its own Hive, whether that
+    # is :8000 in dev or :8080 on a VPS.
+    if not hive_url:
+        _configured = os.getenv("HIVE_URL") or os.getenv("OPENCLAW_LOCAL_HIVE_URL")
+        if _configured:
+            from urllib.parse import urlparse
+            _p = urlparse(_configured)
+            _port = f":{_p.port}" if _p.port else ""
+            hive_url = f"http://localhost{_port}"
+        else:
+            hive_url = "http://localhost:8000"
 
     # Forward any user-provided LLM credentials so the agent can make real
     # model calls. OPENROUTER_API_KEY (+ optional OPENROUTER_MODEL) is the

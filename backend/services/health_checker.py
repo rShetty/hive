@@ -41,8 +41,11 @@ async def ping_agent_endpoint(
         # against the running Hive instance so aiohttp gets an absolute URL.
         if health_url.startswith("/"):
             from os import getenv
+            from urllib.parse import urlparse
             if getenv("OPENCLAW_DEPLOY_MODE", "local") == "local":
-                _hive_base = "http://localhost:8000"
+                _configured = getenv("HIVE_URL") or ""
+                _port = f":{urlparse(_configured).port}" if urlparse(_configured).port else ""
+                _hive_base = f"http://localhost{_port}" if _port else "http://localhost:8000"
             else:
                 _hive_base = getenv("MARKETPLACE_URL") or getenv("HIVE_URL") or "http://localhost:8000"
             health_url = _hive_base.rstrip("/") + health_url

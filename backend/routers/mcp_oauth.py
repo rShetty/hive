@@ -104,56 +104,94 @@ async def _discover(server: MCPServer) -> dict:
     }
 
 
-async def _register_client(server: MCPServer, meta: dict, redirect_uri: str) -> tuple[str, Optional[str]]:
-    """Resolve a client id/secret.
-
-    Order of precedence:
-      1. Pre-registered credentials stored on the MCPServer row
-         (``oauth_client_id`` / ``oauth_client_secret``) — used for providers
-         without dynamic client registration, e.g. GitHub.
-      2. Credentials already obtained from a previous DCR (in oauth_encrypted).
-      3. Dynamic client registration against the provider's registration
-         endpoint (when supported).
-    """
+def _static_creds(server: MCPServer) -> tuple[Optional[str], Optional[str]]:
+    """Return pre-registered client credentials stored on the server row."""
     if server.oauth_client_id:
         return server.oauth_client_id, server.oauth_client_secret
+    return None, None
 
+
+def _stored_creds(server: MCPServer) -> tuple[Optional[str], Optional[str]]:
+    """Return client credentials obtained from a previous DCR exchange."""
     stored = decrypt_json(server.oauth_encrypted) or {}
     if stored.get("client_id"):
         return stored["client_id"], stored.get("client_secret")
+    return None, None
 
-    # Providers that don't support DCR require the user to register an app and
-    # supply its credentials via the server record.
-    if meta.get("no_dynamic_registration"):
+
+async def _try_dcr(meta: dict, redirect_uri: str) -> Optional[tuple[str, Optional[str]]]:
+    """Attempt dynamic client registration; return (client_id, secret) or None.
+
+    Returns ``None`` (without raising) when the provider does not advertise a
+    registration endpoint or the registration fails — callers then fall back
+    to static/pre-registered credentials.
+    """
+    reg_ep = meta.get("registration_endpoint")
+    if not reg_ep:
+        return None
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        try:
+            r = await client.post(
+                reg_ep,
+                json={
+                    "client_name": "Hive OpenClaw",
+                    "redirect_uris": [redirect_uri],
+                    "grant_types": ["authorization_code"],
+                    "response_types": ["code"],
+                    "token_endpoint_auth_method": "none",
+                },
+                headers={"Content-Type": "application/json"},
+            )
+        except Exception:
+            return None
+        if r.status_code >= 400:
+            return None
+        data = r.json()
+        return data.get("client_id"), data.get("client_secret")
+
+
+async def _register_client(server: MCPServer, meta: dict, redirect_uri: str) -> tuple[str, Optional[str]]:
+    """Resolve a client id/secret.
+
+    Strategy:
+      1. **Dynamic Client Registration** when the provider advertises a
+         ``registration_endpoint`` (i.e. DCR is supported). The freshly
+         registered client is persisted for reuse.
+      2. **Static credentials** stored on the server row (``oauth_client_id`` /
+         ``oauth_client_secret``) — used for providers without DCR, or as a
+         fallback when DCR is unavailable.
+      3. Previously-DCR'd credentials cached in ``oauth_encrypted``.
+
+    If neither DCR nor static creds are available, a clear 400 is raised.
+    """
+    # 1. DCR when supported.
+    if meta.get("registration_endpoint") and not meta.get("no_dynamic_registration"):
+        dcr = await _try_dcr(meta, redirect_uri)
+        if dcr and dcr[0]:
+            client_id, client_secret = dcr
+            stored = decrypt_json(server.oauth_encrypted) or {}
+            blob = {**(stored or {}), "client_id": client_id, "client_secret": client_secret}
+            server.oauth_encrypted = encrypt_json(blob)
+            return client_id, client_secret
+
+    # 2. Static pre-registered credentials.
+    sid, ssec = _static_creds(server)
+    if sid:
+        return sid, ssec
+
+    # 3. Previously cached DCR credentials.
+    cid, csec = _stored_creds(server)
+    if cid:
+        return cid, csec
+
+    # Nothing available.
+    if meta.get("no_dynamic_registration") or not meta.get("registration_endpoint"):
         raise HTTPException(
             400,
             "This provider does not support automatic client registration. "
             "Register an OAuth App and supply its client_id/client_secret on the MCP server.",
         )
-
-    reg_ep = meta.get("registration_endpoint")
-    if not reg_ep:
-        raise HTTPException(502, "OAuth client registration is not supported by this provider")
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        r = await client.post(
-            reg_ep,
-            json={
-                "client_name": "Hive OpenClaw",
-                "redirect_uris": [redirect_uri],
-                "grant_types": ["authorization_code"],
-                "response_types": ["code"],
-                "token_endpoint_auth_method": "none",
-            },
-            headers={"Content-Type": "application/json"},
-        )
-        if r.status_code >= 400:
-            raise HTTPException(502, f"OAuth client registration failed: {r.status_code}")
-        data = r.json()
-        client_id = data.get("client_id")
-        client_secret = data.get("client_secret")
-        blob = {**(stored or {}), "client_id": client_id, "client_secret": client_secret}
-        server.oauth_encrypted = encrypt_json(blob)
-        return client_id, client_secret
+    raise HTTPException(502, "OAuth client registration failed: no client credentials available")
 
 
 @router.get("/servers/{server_id}/connect")

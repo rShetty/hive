@@ -101,17 +101,25 @@
 
                     <!-- MCP servers -->
                     <div>
-                        <label class="field-label">MCP Servers <span class="text-gray-400 font-normal">(optional)</span></label>
+                        <label class="field-label">MCP Servers <span class="text-gray-400 font-normal">(optional, ad-hoc http/sse)</span></label>
                         <template x-for="(mcp, idx) in byoa.mcpServers" :key="idx">
-                            <div class="flex gap-2 mb-2">
-                                <input type="text" x-model="mcp.name" placeholder="Server name" class="field flex-1">
-                                <input type="url" x-model="mcp.url" placeholder="https://mcp.example.com" class="field flex-[2]">
-                                <button type="button" @click="byoa.mcpServers.splice(idx,1)"
-                                        class="btn btn-ghost btn-sm px-3">✕</button>
+                            <div class="border rounded-lg p-3 mb-2 space-y-2">
+                                <div class="flex gap-2">
+                                    <input type="text" x-model="mcp.name" placeholder="Server name" class="field flex-1">
+                                    <select x-model="mcp.transport" class="field w-32">
+                                        <option value="http">HTTP</option>
+                                        <option value="sse">SSE</option>
+                                    </select>
+                                    <button type="button" @click="byoa.mcpServers.splice(idx,1)"
+                                            class="btn btn-ghost btn-sm px-3">✕</button>
+                                </div>
+                                <input type="url" x-model="mcp.url" placeholder="https://mcp.example.com" class="field">
+                                <input type="text" x-model="mcp.headers" placeholder='Auth headers JSON: {"Authorization":"Bearer ..."}' class="field font-mono text-xs">
                             </div>
                         </template>
-                        <button type="button" @click="byoa.mcpServers.push({name:'',url:''})"
+                        <button type="button" @click="byoa.mcpServers.push({name:'',url:'',transport:'http',headers:''})"
                                 class="btn btn-soft btn-sm">+ Add MCP Server</button>
+                        <p class="text-xs text-gray-500 mt-2">For stdio or OAuth servers, register them in the <a href="/mcp" class="text-purple-600 underline">MCP registry</a> and select below.</p>
                     </div>
 
                     <!-- MCP servers from your registry -->
@@ -295,7 +303,12 @@
                     const tags = this.byoa.tagsRaw.split(',').map(s=>s.trim()).filter(Boolean);
                     const mcpServers = this.byoa.mcpServers
                         .filter(m => m.name && m.url)
-                        .map(m => ({ name: m.name, url: m.url, description: '' }));
+                        .map(m => ({
+                            name: m.name, url: m.url,
+                            transport: m.transport || 'http',
+                            headers: m.headers ? safeJson(m.headers) : null,
+                            description: '',
+                        }));
                     try {
                         const res = await apiFetch('/api/agents/deploy-hosted', {
                             method:'POST', headers: {'Content-Type':'application/json'},
@@ -313,7 +326,12 @@
                         if (res.ok) this.byoaResult = await res.json();
                         else { const d = await res.json(); this.error = d.detail || 'Deployment failed'; }
                     } catch(e) { this.error = 'Network error.'; }
-                    finally { this.deploying = false; }
+                        finally { this.deploying = false; }
+                },
+
+                safeJson(str) {
+                    if (!str) return null;
+                    try { return JSON.parse(str); } catch (e) { return null; }
                 },
 
                 // ---- OpenClaw ----

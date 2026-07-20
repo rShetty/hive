@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import httpx
 
+from mcp_client import MCPManager
+
 app = FastAPI(title="OpenClaw Agent")
 
 AGENT_ID = os.getenv("AGENT_ID", "unknown")
@@ -29,6 +31,28 @@ except Exception:
 # Track recent activity in-memory
 _activity: list[dict] = []
 _start_time = datetime.utcnow()
+
+# MCP manager (populated on startup from MCP_SERVERS env)
+MCP_MANAGER: Optional[MCPManager] = None
+
+
+def _init_mcp():
+    """Build and connect the MCP manager from the MCP_SERVERS env (sync best-effort)."""
+    global MCP_MANAGER
+    if not MCP_SERVERS:
+        return
+    mgr = MCPManager(MCP_SERVERS)
+    try:
+        asyncio.get_event_loop().run_until_complete(mgr.connect_all())
+    except RuntimeError:
+        # No running loop yet (still importing) — connect in the startup hook.
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(mgr.connect_all())
+        loop.close()
+    MCP_MANAGER = mgr
+    for st in mgr.status:
+        _log_activity("mcp", f"MCP {st['name']}: {'connected' if st['connected'] else 'failed'} "
+                              f"({st['tools']} tools)" + (f" — {st['error']}" if st['error'] else ""))
 
 
 def _log_activity(kind: str, summary: str, detail: Any = None):
@@ -110,7 +134,7 @@ def _resolve_llm() -> Optional[dict]:
 
 
 async def _call_llm(task: str, system: str = "") -> str:
-    """Call the configured LLM and return its text response."""
+    """Call the configured LLM, executing any MCP tools it requests."""
     cfg = _resolve_llm()
     if not cfg:
         return (
@@ -123,16 +147,61 @@ async def _call_llm(task: str, system: str = "") -> str:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": task})
 
+    tools = MCP_MANAGER.openai_tools() if MCP_MANAGER else []
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
+            # First pass: ask the model (with tools if any).
+            payload = {
+                "model": cfg["model"],
+                "messages": messages,
+                "max_tokens": 1024,
+            }
+            if tools:
+                payload["tools"] = tools
             resp = await client.post(
                 f"{cfg['base_url']}/chat/completions",
                 headers={"Authorization": f"Bearer {cfg['api_key']}"},
-                json={"model": cfg["model"], "messages": messages, "max_tokens": 1024},
+                json=payload,
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            msg = data["choices"][0]["message"]
+
+            # No tool calls requested — return the text directly.
+            if not msg.get("tool_calls"):
+                return (msg.get("content") or "").strip()
+
+            # Tool-calling loop.
+            messages.append(msg)
+            for _ in range(5):
+                tc = msg.get("tool_calls") or []
+                if not tc:
+                    break
+                for call in tc:
+                    fn = call.get("function", {})
+                    name = fn.get("name", "")
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    _log_activity("tool", f"Calling MCP tool {name}")
+                    result = await MCP_MANAGER.call(name, args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call.get("id"),
+                        "content": result,
+                    })
+                resp = await client.post(
+                    f"{cfg['base_url']}/chat/completions",
+                    headers={"Authorization": f"Bearer {cfg['api_key']}"},
+                    json={"model": cfg["model"], "messages": messages, "max_tokens": 1024, "tools": tools},
+                )
+                resp.raise_for_status()
+                msg = resp.json()["choices"][0]["message"]
+                if not msg.get("tool_calls"):
+                    break
+            return (msg.get("content") or "").strip()
     except Exception as e:
         _log_activity("error", f"LLM call failed: {e}")
         return f"[{AGENT_NAME}] Task received: {task[:200]}. (LLM call failed: {e})"
@@ -311,16 +380,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <!-- MCP Servers -->
-      <div class="bg-white rounded-xl border p-4" x-show="stats.mcp_servers.length > 0">
+      <div class="bg-white rounded-xl border p-4" x-show="stats.mcp_status.length > 0">
         <h3 class="text-sm font-semibold text-gray-700 mb-3">MCP Servers</h3>
         <div class="space-y-2">
-          <template x-for="mcp in stats.mcp_servers" :key="mcp.name">
-            <div class="flex items-center space-x-2">
-              <div class="w-6 h-6 bg-purple-50 rounded-md flex items-center justify-center text-xs">🔌</div>
-              <div class="min-w-0">
-                <div class="text-xs text-gray-700 font-medium" x-text="mcp.name"></div>
-                <div class="text-xs text-gray-400 truncate" x-text="mcp.url"></div>
+          <template x-for="mcp in stats.mcp_status" :key="mcp.name">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2 min-w-0">
+                <div class="w-6 h-6 bg-purple-50 rounded-md flex items-center justify-center text-xs">🔌</div>
+                <div class="min-w-0">
+                  <div class="text-xs text-gray-700 font-medium" x-text="mcp.name"></div>
+                  <div class="text-xs text-gray-400 truncate" x-text="(mcp.transport || 'http') + ' · ' + mcp.tools + ' tools'"></div>
+                </div>
               </div>
+              <span :class="mcp.connected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'"
+                    class="text-xs px-2 py-0.5 rounded-full font-medium"
+                    x-text="mcp.connected ? 'Live' : 'Error'"></span>
             </div>
           </template>
         </div>
@@ -378,7 +452,7 @@ function agentDash() {{
     messages: [],
     thinking: false,
     _msgId: 0,
-    stats: {{ tasks_handled: 0, skills_count: 0, skills: [], telegram: false, llm_provider: null, mcp_servers: [] }},
+    stats: {{ tasks_handled: 0, skills_count: 0, skills: [], telegram: false, llm_provider: null, mcp_servers: [], mcp_status: [] }},
     activity: [],
     agentId: '{agent_id}',
 
@@ -508,6 +582,13 @@ async def status():
         "telegram": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
         "llm_provider": llm_provider,
         "mcp_servers": [{"name": m.get("name"), "url": m.get("url")} for m in MCP_SERVERS],
+        "mcp_status": [{
+            "name": s["name"],
+            "transport": s["transport"],
+            "connected": s["connected"],
+            "tools": s["tools"],
+            "error": s["error"],
+        } for s in (MCP_MANAGER.status if MCP_MANAGER else [])],
         "uptime_seconds": int((datetime.utcnow() - _start_time).total_seconds()),
         "activity": _activity[:20],
     }
@@ -668,6 +749,10 @@ async def _send_heartbeat():
 @app.on_event("startup")
 async def startup_event():
     _log_activity("start", f"Agent {AGENT_NAME} started")
+    try:
+        _init_mcp()
+    except Exception as e:
+        _log_activity("error", f"MCP init failed: {e}")
     if HIVE_URL and HIVE_API_KEY:
         asyncio.create_task(_heartbeat_loop())
 

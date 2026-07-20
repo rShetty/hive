@@ -37,6 +37,22 @@ def _normalize_model_key(model_key) -> dict:
         return {str(model_key["provider"]): model_key["key"]}
     return {str(k): v for k, v in model_key.items()}
 
+
+def _mcp_headers_for(server) -> dict:
+    """Build the auth headers an agent should send to an MCP server.
+
+    Starts from any statically configured headers, then (for OAuth servers
+    with a stored access token) adds a Bearer Authorization header.
+    """
+    from services.crypto import decrypt_json
+    headers = dict(decrypt_json(getattr(server, "headers_encrypted", None)) or {})
+    if getattr(server, "auth_type", "headers") == "oauth":
+        blob = decrypt_json(getattr(server, "oauth_encrypted", None)) or {}
+        token = blob.get("access_token")
+        if token:
+            headers["Authorization"] = f"{blob.get('token_type', 'Bearer')} {token}"
+    return headers
+
 # Encryption key for API keys — MUST be set in production.
 # Generating a fallback for local dev only; data encrypted with this key
 # becomes unreadable if the process restarts.
@@ -698,7 +714,9 @@ async def deploy_hosted_agent(
             "url": srv.url,
             "description": srv.description,
             "transport": srv.transport,
-            "headers": decrypt_json(srv.headers_encrypted) or {},
+            "headers": _mcp_headers_for(srv),
+            "command": srv.command,
+            "env": decrypt_json(srv.env_encrypted) or {},
         })
     await db.commit()
 

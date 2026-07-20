@@ -22,11 +22,24 @@ class MCPServer(Base):
     url = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
 
-    # Transport: "http" (streamable HTTP) or "sse"
+    # Transport: "http" (streamable HTTP), "sse", or "stdio"
     transport = Column(String(20), default="http")
+
+    # For stdio transport: the command (and optional env) used to launch the
+    # MCP server as a local subprocess. JSON-RPC is spoken over stdin/stdout.
+    command = Column(Text, nullable=True)
+    env_encrypted = Column(Text, nullable=True)
 
     # Encrypted JSON of optional auth headers, e.g. {"Authorization": "Bearer ..."}
     headers_encrypted = Column(Text, nullable=True)
+
+    # Auth mode: "headers" (static) or "oauth" (OAuth 2.0 connect flow).
+    auth_type = Column(String(20), default="headers")
+
+    # For OAuth: encrypted JSON of {access_token, refresh_token, expires_at,
+    # token_type, scope, client_id, client_secret, issuer}. Populated by the
+    # connect flow; used to build the Authorization header at runtime.
+    oauth_encrypted = Column(Text, nullable=True)
 
     # Visibility: "private" (owner only) — MCP servers are not shared publicly
     # by default; access is granted per-agent via AgentMCPAccess.

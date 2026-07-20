@@ -35,17 +35,43 @@
                         <label class="field-label">Name *</label>
                         <input type="text" x-model="form.name" placeholder="GitHub MCP" class="field" :disabled="editing">
                     </div>
-                    <div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="field-label">Transport</label>
+                            <select x-model="form.transport" class="field" :disabled="editing">
+                                <option value="http">Streamable HTTP</option>
+                                <option value="sse">SSE</option>
+                                <option value="stdio">Stdio (local command)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="field-label">Auth type</label>
+                            <select x-model="form.auth_type" class="field" :disabled="editing">
+                                <option value="headers">Static headers</option>
+                                <option value="oauth">OAuth (Connect)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div x-show="form.transport !== 'stdio'">
                         <label class="field-label">URL * <span class="text-gray-400 font-normal">(http/https)</span></label>
                         <input type="url" x-model="form.url" placeholder="https://mcp.example.com" class="field">
+                    </div>
+                    <div x-show="form.transport === 'stdio'">
+                        <label class="field-label">Command * <span class="text-gray-400 font-normal">(launched as subprocess)</span></label>
+                        <input type="text" x-model="form.command" placeholder="npx -y @modelcontextprotocol/server-github" class="field font-mono text-xs">
+                        <label class="field-label mt-2">Env (JSON, optional)</label>
+                        <textarea x-model="form.env" rows="2" placeholder='{"GITHUB_TOKEN":"..."}' class="field font-mono text-xs"></textarea>
                     </div>
                     <div>
                         <label class="field-label">Description</label>
                         <textarea x-model="form.description" rows="2" class="field"></textarea>
                     </div>
-                    <div>
+                    <div x-show="form.auth_type === 'headers'">
                         <label class="field-label">Auth headers <span class="text-gray-400 font-normal">(JSON, stored encrypted)</span></label>
                         <textarea x-model="form.headers" rows="3" placeholder='{"Authorization":"Bearer ..."}' class="field font-mono text-xs"></textarea>
+                    </div>
+                    <div x-show="form.auth_type === 'oauth'" class="p-3 bg-indigo-50 rounded-lg text-sm text-indigo-700">
+                        OAuth servers are authorized via the <b>Connect</b> button after saving — no manual headers needed.
                     </div>
                 </div>
                 <div x-show="error" class="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm" x-text="error"></div>
@@ -88,6 +114,7 @@
                         </div>
                         <div class="flex gap-1">
                             <button @click="openGrant(srv)" class="btn btn-soft btn-sm">Access</button>
+                            <button x-show="srv.auth_type === 'oauth' && !srv.oauth_connected" @click="connect(srv)" class="btn btn-accent btn-sm">Connect</button>
                             <button @click="editServer(srv)" class="btn btn-ghost btn-sm">✎</button>
                             <button @click="remove(srv)" class="btn btn-ghost btn-sm">✕</button>
                         </div>
@@ -95,6 +122,7 @@
                     <p class="text-sm text-gray-600 mt-2" x-text="srv.description || 'No description'"></p>
                     <div class="mt-3 flex items-center gap-2 text-xs text-gray-500">
                         <span class="badge" x-text="srv.transport"></span>
+                        <span x-show="srv.auth_type === 'oauth'" class="badge" :class="srv.oauth_connected ? 'badge-active' : 'badge-pending'" x-text="srv.oauth_connected ? 'OAuth ✓' : 'OAuth'"></span>
                         <span x-text="(srv.agent_count || 0) + ' agent(s) with access'"></span>
                     </div>
                 </div>
@@ -110,7 +138,7 @@
                 servers: [], agents: [],
                 showModal: false, showGrant: false, editing: false, saving: false,
                 error: '', grantError: '', grantSaving: false, grantServer: null, grantSelection: [],
-                form: { name:'', url:'', description:'', headers:'' },
+                form: { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'' },
                 init() { this.load(); this.loadAgents(); },
                 async load() {
                     const res = await apiFetch('/api/mcp-servers');
@@ -120,22 +148,37 @@
                     const res = await apiFetch('/api/agents');
                     if (res.ok) this.agents = await res.json();
                 },
-                openCreate() { this.editing = false; this.error = ''; this.form = { name:'', url:'', description:'', headers:'' }; this.showModal = true; },
-                editServer(srv) { this.editing = true; this._id = srv.id; this.error=''; this.form = { name: srv.name, url: srv.url, description: srv.description||'', headers:'' }; this.showModal = true; },
+                openCreate() { this.editing = false; this.error = ''; this.form = { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'' }; this.showModal = true; },
+                editServer(srv) { this.editing = true; this._id = srv.id; this.error=''; this.form = { name: srv.name, url: srv.url||'', description: srv.description||'', headers:'', transport: srv.transport||'http', auth_type: srv.auth_type||'headers', command: srv.command||'', env:'' }; this.showModal = true; },
                 closeModal() { this.showModal = false; this.editing = false; },
                 async save() {
                     this.saving = true; this.error = '';
-                    let headers = null;
+                    if (!this.form.name.trim()) { this.error = 'Name is required'; this.saving=false; return; }
+                    if (this.form.transport !== 'stdio' && !this.form.url.trim()) { this.error = 'URL is required for http/sse'; this.saving=false; return; }
+                    if (this.form.transport === 'stdio' && !this.form.command.trim()) { this.error = 'Command is required for stdio'; this.saving=false; return; }
+                    let headers = null, env = null;
                     if (this.form.headers.trim()) {
                         try { headers = JSON.parse(this.form.headers); } catch(e) { this.error = 'Headers must be valid JSON'; this.saving=false; return; }
                     }
-                    const body = { name: this.form.name, url: this.form.url, description: this.form.description, headers };
+                    if (this.form.env.trim()) {
+                        try { env = JSON.parse(this.form.env); } catch(e) { this.error = 'Env must be valid JSON'; this.saving=false; return; }
+                    }
+                    const body = { name: this.form.name, url: this.form.url, description: this.form.description, headers, transport: this.form.transport, auth_type: this.form.auth_type, command: this.form.command, env };
                     let res;
                     if (this.editing) res = await apiFetch('/api/mcp-servers/' + this._id, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
                     else res = await apiFetch('/api/mcp-servers', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
                     if (res.ok) { this.closeModal(); this.load(); }
                     else { const e = await res.json().catch(()=>({})); this.error = e.detail || 'Save failed'; }
                     this.saving = false;
+                },
+                async connect(srv) {
+                    const res = await apiFetch('/api/mcp/servers/' + srv.id + '/connect');
+                    if (!res.ok) { const e = await res.json().catch(()=>({})); alert('Connect failed: ' + (e.detail || res.status)); return; }
+                    const { authorize_url } = await res.json();
+                    const w = window.open(authorize_url, 'mcp_oauth', 'width=600,height=700');
+                    const timer = setInterval(async () => {
+                        if (w.closed) { clearInterval(timer); this.load(); }
+                    }, 1000);
                 },
                 async remove(srv) {
                     if (!confirm('Delete MCP server ' + srv.name + '? This revokes all agent access.')) return;

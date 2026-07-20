@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir \
     httpx==0.26.0 \
     pydantic==2.5.0
 
-COPY agent_app/main.py /app/main.py
+COPY agent_app/ /app/
 
 EXPOSE 9000
 

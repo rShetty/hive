@@ -1,6 +1,6 @@
 """Pydantic schemas for API requests/responses."""
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator, model_validator
 from datetime import datetime
 
 
@@ -174,9 +174,12 @@ class AgentRegistrationResponse(HiveBaseModel):
 class MCPServerSpec(HiveBaseModel):
     """An MCP server the agent can use as a tool source."""
     name: str
-    url: str                       # base URL of the MCP HTTP/SSE server
+    url: str = ""                  # base URL of the MCP HTTP/SSE server
     description: Optional[str] = None
+    transport: str = "http"        # http | sse | stdio
     headers: Optional[Dict[str, str]] = None  # optional auth headers
+    command: Optional[str] = None  # for stdio: shell command to launch
+    env: Optional[Dict[str, str]] = None      # for stdio: extra env vars
 
 
 class HostedAgentRequest(HiveBaseModel):
@@ -215,11 +218,29 @@ class HostedAgentResponse(HiveBaseModel):
 
 class MCPServerCreate(HiveBaseModel):
     name: str
-    url: str
+    url: str = ""
     description: Optional[str] = None
-    transport: str = "http"          # http | sse
+    transport: str = "http"          # http | sse | stdio
+    auth_type: str = "headers"       # headers | oauth
     # Optional auth headers (sent to the MCP server). Stored encrypted.
     headers: Optional[Dict[str, str]] = None
+    # For stdio transport: command + optional env used to launch the server.
+    command: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
+
+    @model_validator(mode="after")
+    def _check_transport(self):
+        if self.transport not in ("http", "sse", "stdio"):
+            raise ValueError("transport must be 'http', 'sse', or 'stdio'")
+        if self.auth_type not in ("headers", "oauth"):
+            raise ValueError("auth_type must be 'headers' or 'oauth'")
+        if self.transport == "stdio":
+            if not self.command:
+                raise ValueError("stdio transport requires a 'command'")
+        else:
+            if not self.url:
+                raise ValueError("http/sse transport requires a 'url'")
+        return self
 
 
 class MCPServerUpdate(HiveBaseModel):
@@ -227,7 +248,10 @@ class MCPServerUpdate(HiveBaseModel):
     url: Optional[str] = None
     description: Optional[str] = None
     transport: Optional[str] = None
+    auth_type: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
+    command: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
 
 
 class MCPServerResponse(HiveBaseModel):
@@ -237,6 +261,9 @@ class MCPServerResponse(HiveBaseModel):
     url: str
     description: Optional[str] = None
     transport: str = "http"
+    auth_type: str = "headers"
+    oauth_connected: bool = False
+    command: Optional[str] = None
     visibility: str = "private"
     is_active: bool = True
     created_at: Optional[datetime] = None

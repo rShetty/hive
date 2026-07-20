@@ -39,6 +39,9 @@ def _to_response(server: MCPServer, agent_count: int = None) -> MCPServerRespons
         url=server.url,
         description=server.description,
         transport=server.transport,
+        auth_type=server.auth_type,
+        oauth_connected=bool(server.oauth_encrypted),
+        command=server.command,
         visibility=server.visibility,
         is_active=server.is_active,
         created_at=server.created_at,
@@ -73,14 +76,19 @@ async def create_mcp_server(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    _validate_url(data.url)
+    if data.transport != "stdio":
+        _validate_url(data.url)
     headers_enc = encrypt_json(data.headers) if data.headers else None
+    env_enc = encrypt_json(data.env) if data.env else None
     server = MCPServer(
         owner_id=current_user.id,
         name=data.name,
-        url=data.url,
+        url=data.url or "",
         description=data.description,
         transport=data.transport,
+        auth_type=data.auth_type,
+        command=data.command,
+        env_encrypted=env_enc,
         headers_encrypted=headers_enc,
         visibility="private",
     )
@@ -117,6 +125,12 @@ async def update_mcp_server(
         server.description = data.description
     if data.transport is not None:
         server.transport = data.transport
+    if data.auth_type is not None:
+        server.auth_type = data.auth_type
+    if data.command is not None:
+        server.command = data.command
+    if data.env is not None:
+        server.env_encrypted = encrypt_json(data.env) if data.env else None
     if data.headers is not None:
         server.headers_encrypted = encrypt_json(data.headers) if data.headers else None
     await db.commit()

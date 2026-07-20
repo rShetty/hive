@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from database import init_db
-from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config, mcp
+from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config, mcp, mcp_oauth
 from services.skill_catalog import seed_skills
 from middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from middleware.monitoring import MonitoringMiddleware, metrics
@@ -111,6 +111,7 @@ app.include_router(agents.router)
 app.include_router(agent_api.router)
 app.include_router(skills.router)
 app.include_router(mcp.router)
+app.include_router(mcp_oauth.router)
 app.include_router(deploy.router)
 app.include_router(marketplace.router)
 app.include_router(invites.router)

@@ -201,6 +201,12 @@ async def rehydrate_local_agents(db) -> int:
             if env and val:
                 env_vars[env] = str(val)
 
+        # Re-inject MCP servers from the persistent (encrypted) config so the
+        # agent keeps its tool access after a Hive restart.
+        mcp_servers = cfg.get("mcp_servers") or []
+        if mcp_servers:
+            env_vars["MCP_SERVERS"] = json.dumps(mcp_servers)
+
         # Fresh API key (plaintext is not persisted; only the hash).
         api_key = f"am-{_secrets.token_urlsafe(32)}"
         agent.api_key_hash = get_password_hash(api_key)

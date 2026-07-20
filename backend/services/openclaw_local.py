@@ -114,6 +114,9 @@ def spawn_openclaw_agent(
         "AGENT_API_KEY": api_key,
         "HIVE_URL": hive_url,
         "HIVE_API_KEY": api_key,
+        # Public base URL for the agent's "Hive Marketplace" dashboard link.
+        # Distinct from HIVE_URL, which is the internal callback address.
+        "MARKETPLACE_URL": os.getenv("MARKETPLACE_URL", "https://hive.rajeev.me"),
         "INSTANCE_ID": agent_id,
         "SKILLS": ",".join(skills or []),
         "PORT": str(port),

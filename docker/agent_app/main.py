@@ -477,7 +477,7 @@ async def dashboard():
     html = DASHBOARD_HTML.format(
         agent_name=AGENT_NAME,
         agent_id=AGENT_ID,
-        hive_url=HIVE_URL or "https://hive.rajeev.me",
+        hive_url=os.getenv("MARKETPLACE_URL") or HIVE_URL or "https://hive.rajeev.me",
         start_time=_start_time.isoformat(),
     )
     return HTMLResponse(content=html)

@@ -148,7 +148,8 @@ async def rehydrate_local_agents(db) -> int:
     Returns the number of agents rehydrated.
     """
     from sqlalchemy import select
-    from models.agent import Agent, AgentStatus, AgentSkill
+    from models.agent import Agent, AgentStatus
+    from models.agent_skill import AgentSkill
     from models.skill import Skill
     from services.crypto import decrypt_json
     from auth import get_password_hash

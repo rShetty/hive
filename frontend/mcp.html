@@ -10,7 +10,14 @@
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="mcpApp()" x-init="init()">
-    <div id="nav"></div>
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
+    <div id="nav-root"></div>
+    <script src="/js/nav.js"></script>
+    <script>renderNav({ active: 'mcp' });</script>
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'mcp' });</script>
 
     <main class="max-w-5xl mx-auto px-4 py-8">
         <header class="mb-6">
@@ -107,7 +114,7 @@
                 showModal: false, showGrant: false, editing: false, saving: false,
                 error: '', grantError: '', grantSaving: false, grantServer: null, grantSelection: [],
                 form: { name:'', url:'', description:'', headers:'' },
-                init() { renderNav({active: 'mcp'}); this.load(); this.loadAgents(); },
+                init() { this.load(); this.loadAgents(); },
                 async load() {
                     const res = await apiFetch('/api/mcp-servers');
                     if (res.ok) this.servers = await res.json();
@@ -160,5 +167,7 @@
             };
         }
     </script>
+    </main>
+    </div>
 </body>
 </html>

@@ -25,9 +25,14 @@
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="tasksApp()" x-init="init()">
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
     <div id="nav-root"></div>
     <script src="/js/nav.js"></script>
     <script>renderNav({ active: 'tasks' });</script>
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'tasks' });</script>
 
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         <!-- Header -->
@@ -612,5 +617,7 @@
             };
         }
     </script>
+    </main>
+    </div>
 </body>
 </html>

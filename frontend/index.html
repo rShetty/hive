@@ -10,9 +10,14 @@
     <link rel="stylesheet" href="/css/theme.css">
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="app()">
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
     <div id="nav-root"></div>
     <script src="/js/nav.js"></script>
     <script>renderNav({ active: 'home' });</script>
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'home' });</script>
 
     <!-- Hero Section -->
     <div class="hero">
@@ -197,5 +202,7 @@
             }
         }
     </script>
+    </main>
+    </div>
 </body>
 </html>

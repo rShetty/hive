@@ -10,7 +10,14 @@
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="skillsApp()" x-init="init()">
-    <div id="nav"></div>
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
+    <div id="nav-root"></div>
+    <script src="/js/nav.js"></script>
+    <script>renderNav({ active: 'skills' });</script>
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'skills' });</script>
 
     <main class="max-w-5xl mx-auto px-4 py-8">
         <header class="mb-6">
@@ -115,7 +122,7 @@
                 saving: false,
                 error: '',
                 form: { name:'', display_name:'', description:'', category:'general', kind:'prompt', tool_endpoint:'', instructions:'', required_env_vars:'' },
-                init() { renderNav({active: 'skills'}); this.load(); },
+                init() { this.load(); },
                 async load() {
                     const res = await apiFetch('/api/skills');
                     if (res.ok) this.skills = await res.json();
@@ -170,5 +177,7 @@
             };
         }
     </script>
+    </main>
+    </div>
 </body>
 </html>

@@ -19,10 +19,14 @@
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="configApp()">
-
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
     <div id="nav-root"></div>
     <script src="/js/nav.js"></script>
     <script>renderNav({ active: 'agents' });</script>
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'agents' });</script>
 
     <!-- Secondary breadcrumb under nav -->
     <div class="bg-white border-b border-black/5 sticky top-16 z-10">
@@ -897,5 +901,7 @@
         };
     }
     </script>
+    </main>
+    </div>
 </body>
 </html>

@@ -11,9 +11,14 @@
     <link rel="stylesheet" href="/css/theme.css">
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="settingsApp()">
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
     <div id="nav-root"></div>
     <script src="/js/nav.js"></script>
     <script>renderNav({ active: 'settings' });</script>
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'settings' });</script>
 
     <!-- Main Content -->
     <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -133,5 +138,7 @@
             }
         }
     </script>
+    </main>
+    </div>
 </body>
 </html>

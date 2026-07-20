@@ -30,3 +30,9 @@ data/
 
 # local agent runtime logs
 docker/agent_app/openclaw-*.log
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example

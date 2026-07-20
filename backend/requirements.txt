@@ -18,3 +18,10 @@ greenlet==3.0.3
 email-validator==2.1.0
 slowapi==0.1.9
 asyncpg==0.29.0
+
+# Agent framework dependencies (for LangChain/CrewAI runtimes)
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-core>=0.1.10
+langchain-community>=0.0.16
+crewai>=0.28.0

@@ -51,14 +51,28 @@ def spawn_openclaw_agent(
     skills: list[str] | None = None,
     hive_url: str | None = None,
     env_vars: dict[str, str] | None = None,
+    framework: str = "openclaw",
 ) -> str:
-    """Launch a real OpenClaw agent process on 127.0.0.1:<port>.
+    """Launch a real agent process on 127.0.0.1:<port>.
+
+    The ``framework`` parameter selects the agent runtime:
+      - ``openclaw`` (default): direct LLM + MCP tool calling
+      - ``langchain``: LangChain agent with tools
+      - ``crewai``: CrewAI multi-agent orchestration
 
     Returns a synthetic "container id" string (``proc-openclaw-<short>``) so the
     rest of the codebase can treat it like any other container handle.
     """
-    if not os.path.isfile(_AGENT_MAIN):
-        raise RuntimeError(f"OpenClaw agent app not found at {_AGENT_MAIN}")
+    # Select the agent module based on framework
+    _MODULE_MAP = {
+        "openclaw": "main",
+        "langchain": "main_langchain",
+        "crewai": "main_crewai",
+    }
+    module_name = _MODULE_MAP.get(framework, "main")
+    agent_module_path = os.path.join(_AGENT_APP_DIR, f"{module_name}.py")
+    if not os.path.isfile(agent_module_path):
+        raise RuntimeError(f"Agent module not found at {agent_module_path} (framework: {framework})")
 
     # Locally-spawned agents MUST reach the SAME local Hive instance, not the
     # public MARKETPLACE_URL (which may point at a different/prod host). Force
@@ -84,9 +98,19 @@ def spawn_openclaw_agent(
     # via ``env_vars``; we fall back to server-level keys if none were supplied.
     llm_env = {}
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    if openrouter_key and not (env_vars or {}).get("OPENROUTER_API_KEY"):
+    user_openrouter_key = (env_vars or {}).get("OPENROUTER_API_KEY")
+    if openrouter_key and not user_openrouter_key:
         llm_env["OPENROUTER_API_KEY"] = openrouter_key
-        llm_env["OPENROUTER_MODEL"] = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it")
+    # Always ensure a usable OpenRouter model is selected so the agent does
+    # not fall back to a default that may be unavailable for the user's key.
+    # An explicit model (user-supplied or server-configured) wins; otherwise
+    # a broadly-available model is used as the safety net.
+    if openrouter_key or user_openrouter_key:
+        llm_env["OPENROUTER_MODEL"] = (
+            (env_vars or {}).get("OPENROUTER_MODEL")
+            or os.getenv("OPENROUTER_MODEL")
+            or "openai/gpt-4o-mini"
+        )
 
     # Secret values (API keys/tokens) are written to files and exposed via
     # ``<NAME>_FILE`` instead of plaintext env, so they don't leak into the
@@ -127,7 +151,7 @@ def spawn_openclaw_agent(
     log_path = os.path.join(_AGENT_APP_DIR, f"openclaw-{agent_id[:8]}.log")
 
     proc = subprocess.Popen(
-        [python, "-m", "uvicorn", "main:app",
+        [python, "-m", "uvicorn", f"{module_name}:app",
          "--host", "127.0.0.1", "--port", str(port)],
         cwd=_AGENT_APP_DIR,
         env=env,
@@ -202,6 +226,12 @@ async def rehydrate_local_agents(db) -> int:
             if env and val:
                 env_vars[env] = str(val)
 
+        # Carry the user's selected model (if any) so the agent does not fall
+        # back to a default that may be unavailable for their key.
+        _model = (cfg.get("model_key") or {}).get("model") or cfg.get("model")
+        if _model and "OPENROUTER" in (model_key or {}):
+            env_vars.setdefault("OPENROUTER_MODEL", str(_model))
+
         # Re-inject MCP servers from the persistent (encrypted) config so the
         # agent keeps its tool access after a Hive restart.
         mcp_servers = cfg.get("mcp_servers") or []
@@ -222,6 +252,7 @@ async def rehydrate_local_agents(db) -> int:
                 api_key=api_key,
                 skills=[s for s in skills if s],
                 env_vars=env_vars,
+                framework=cfg.get("framework", "openclaw"),
             )
         except Exception as e:  # noqa: BLE001
             import logging

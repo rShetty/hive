@@ -752,6 +752,7 @@ async def deploy_hosted_agent(
             api_key=api_key,
             skills=[s.name for s in resolved_skills],
             env_vars=env_vars,
+            framework=req.framework,
         )
         agent.container_id = container_id
         agent.status = AgentStatus.ACTIVE.value

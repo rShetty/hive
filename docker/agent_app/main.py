@@ -98,8 +98,8 @@ def _resolve_llm() -> Optional[dict]:
     if _secret("OPENROUTER_API_KEY"):
         return {
             "base_url": "https://openrouter.ai/api/v1",
-            "api_key": os.getenv("OPENROUTER_API_KEY"),
-            "model": os.getenv("OPENROUTER_MODEL", "tencent/hy3:free"),
+            "api_key": _secret("OPENROUTER_API_KEY"),
+            "model": os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
         }
     if _secret("OPENAI_API_KEY"):
         return {

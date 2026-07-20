@@ -1,4 +1,4 @@
-fastapi==0.109.0
+fastapi==0.115.6
 uvicorn[standard]==0.27.0
 sqlalchemy==2.0.25
 alembic==1.13.1
@@ -18,10 +18,12 @@ greenlet==3.0.3
 email-validator==2.1.0
 slowapi==0.1.9
 asyncpg==0.29.0
+starlette==0.41.3
 
 # Agent framework dependencies (for LangChain/CrewAI runtimes)
-langchain>=0.1.0
-langchain-openai>=0.0.5
-langchain-core>=0.1.10
-langchain-community>=0.0.16
-crewai>=0.28.0
+langchain==0.3.25
+langchain-openai==0.3.12
+langchain-core==0.3.62
+langchain-community==0.3.21
+crewai==0.86.0
+litellm==1.72.6

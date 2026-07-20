@@ -1,13 +1,15 @@
-fastapi==0.109.0
+fastapi==0.115.6
 uvicorn[standard]==0.27.0
 httpx==0.26.0
 python-dotenv==1.0.0
+starlette==0.41.3
 
 # LangChain framework
-langchain>=0.1.0
-langchain-openai>=0.0.5
-langchain-core>=0.1.10
+langchain==0.3.25
+langchain-openai==0.3.12
+langchain-core==0.3.62
 
 # CrewAI framework
-crewai>=0.28.0
-langchain-community>=0.0.16
+crewai==0.86.0
+litellm==1.72.6
+langchain-community==0.3.21

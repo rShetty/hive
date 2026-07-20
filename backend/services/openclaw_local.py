@@ -13,6 +13,7 @@ or server shutdown.
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import signal
 import subprocess

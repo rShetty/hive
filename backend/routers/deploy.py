@@ -456,6 +456,8 @@ async def deploy_openclaw_agent(
             ssh_user=OPENCLAW_VPS_SSH_USER,
             ssh_port=OPENCLAW_VPS_SSH_PORT,
             agent_slug=slug,
+            extra_env=req.extra_env,
+            config_env=None,
         )
     else:
         # Local single-host deploy — uses the Docker socket already mounted

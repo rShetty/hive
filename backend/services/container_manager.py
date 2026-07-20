@@ -247,7 +247,30 @@ def create_openclaw_container(
         "MARKETPLACE_URL": os.getenv("MARKETPLACE_URL", "http://host.docker.internal:8000"),
     }
 
-    environment.update(env_vars)
+    # Keep secret values (API keys/tokens) out of the container environment by
+    # writing them to host files and mounting them read-only; the runtime reads
+    # them via ``<NAME>_FILE``. Plain env vars are passed through normally.
+    from services.secrets import split_secrets
+    plain_env, secret_values = split_secrets(env_vars)
+    environment.update(plain_env)
+
+    secret_mounts = []
+    for name, value in secret_values.items():
+        secret_dir = os.path.join("/tmp", "hive-secrets", container_name)
+        os.makedirs(secret_dir, exist_ok=True)
+        secret_path = os.path.join(secret_dir, name.lower())
+        with open(secret_path, "w") as fh:
+            fh.write(value)
+        os.chmod(secret_path, 0o600)
+        environment[f"{name}_FILE"] = f"/run/secrets/{name.lower()}"
+        secret_mounts.append(
+            docker.types.Mount(
+                target=f"/run/secrets/{name.lower()}",
+                source=secret_path,
+                type="bind",
+                read_only=True,
+            )
+        )
 
     labels = {
         "hive/agent-id": agent_id,
@@ -273,6 +296,7 @@ def create_openclaw_container(
             environment=environment,
             network=NETWORK_NAME,
             ports={f"{OPENCLAW_INTERNAL_PORT}/tcp": ("127.0.0.1", port)},
+            mounts=secret_mounts,
             detach=True,
             restart_policy={"Name": "unless-stopped"},
             labels=labels,

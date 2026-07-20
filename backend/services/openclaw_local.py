@@ -87,12 +87,28 @@ def spawn_openclaw_agent(
         llm_env["OPENROUTER_API_KEY"] = openrouter_key
         llm_env["OPENROUTER_MODEL"] = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it")
 
+    # Secret values (API keys/tokens) are written to files and exposed via
+    # ``<NAME>_FILE`` instead of plaintext env, so they don't leak into the
+    # process environment / ps output.
+    from services.secrets import split_secrets
+    plain_env, secret_values = split_secrets({**(env_vars or {}), **llm_env})
+
+    secret_file_env = {}
+    secret_dir = os.path.join("/tmp", "hive-secrets", f"proc-{agent_id[:8]}")
+    os.makedirs(secret_dir, exist_ok=True)
+    for name, value in secret_values.items():
+        secret_path = os.path.join(secret_dir, name.lower())
+        with open(secret_path, "w") as fh:
+            fh.write(value)
+        os.chmod(secret_path, 0o600)
+        secret_file_env[f"{name}_FILE"] = secret_path
+
     env = {
         **os.environ,
-        # User-supplied keys first (so per-user providers/models win)...
-        **(env_vars or {}),
-        # ...then any server-level fallbacks.
-        **llm_env,
+        # Plain user-supplied env (skills, model names, urls, etc.)...
+        **plain_env,
+        # ...secret values surfaced via *_FILE...
+        **secret_file_env,
         "AGENT_ID": agent_id,
         "AGENT_NAME": agent_name,
         "AGENT_API_KEY": api_key,

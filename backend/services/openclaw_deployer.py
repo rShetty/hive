@@ -38,11 +38,31 @@ def generate_compose(
 
     extra_env: arbitrary env vars passed at deploy time (user model API keys, etc.)
     config_env: per-agent config (LLM keys, integration tokens) stored in Hive DB.
+
+    Secret values (``*_API_KEY`` / ``*_SECRET`` / ``*_TOKEN``) are NOT written
+    into the compose file. Instead they are written to ``./secrets/<NAME>`` on
+    the remote host and mounted read-only into the container as files, exposed
+    to the runtime via ``<NAME>_FILE`` env vars — so they never appear in
+    ``docker inspect`` or in this file.
     """
-    env_lines = ""
+    from services.secrets import split_secrets
+
     merged = {**(extra_env or {}), **(config_env or {})}
-    for k, v in merged.items():
+    plain, secrets = split_secrets(merged)
+
+    env_lines = ""
+    for k, v in plain.items():
         env_lines += f"      - {k}={v}\n"
+    # Expose each secret's file path to the runtime (file is written + mounted
+    # by deploy_to_vps). The agent reads it via ``<NAME>_FILE``.
+    secret_defs = ""
+    secret_mounts = ""
+    secret_refs = ""
+    for name in secrets:
+        fname = name.lower()
+        secret_defs += f"  {fname}:\n    file: ./secrets/{fname}\n"
+        secret_mounts += f"      - {fname}:/run/secrets/{fname}:ro\n"
+        secret_refs += f"      - {name}_FILE=/run/secrets/{fname}\n"
 
     # Use build: . when no custom image is set (default) so we build from
     # the Dockerfile shipped to the remote dir alongside this compose file.
@@ -66,15 +86,20 @@ services:
       - AGENT_NAME={agent_name}
       - HIVE_API_KEY={api_key}
       - HIVE_URL={HIVE_URL}
-{env_lines}    labels:
+{env_lines}{secret_refs}    labels:
       hive.managed: "true"
       hive.instance-id: "{instance_id}"
       hive.agent-name: "{agent_name}"
     networks:
       - default
       - hive-net
+    secrets:
+{secret_mounts}    networks:
+      - default
+      - hive-net
 
-networks:
+secrets:
+{secret_defs}networks:
   hive-net:
     external: true
 """
@@ -89,6 +114,8 @@ async def deploy_to_vps(
     ssh_user: str = "root",
     ssh_port: int = 22,
     agent_slug: Optional[str] = None,
+    extra_env: Optional[dict] = None,
+    config_env: Optional[dict] = None,
 ) -> dict:
     """
     Deploy an OpenClaw Docker Compose stack to a remote VPS via SSH.
@@ -178,6 +205,47 @@ async def deploy_to_vps(
                 f"'mv {remote_dir}/Dockerfile.openclaw {remote_dir}/Dockerfile'",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+
+        # 2c. Write secret values to files on the remote host. These are
+        # mounted read-only into the container by the compose `secrets:` block
+        # so the keys never appear in `docker inspect` or in the compose file.
+        from services.secrets import split_secrets
+        _, secret_values = split_secrets({**(extra_env or {}), **(config_env or {})})
+        if secret_values:
+            # Create the secrets dir remotely.
+            proc = await asyncio.create_subprocess_shell(
+                f"ssh {ssh_opts} {target} 'mkdir -p {remote_dir}/secrets'",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "message": f"Failed to create secrets dir: {stderr.decode()}",
+                }
+            for name, value in secret_values.items():
+                fname = name.lower()
+                # Write the secret via a heredoc so it never hits a shell arg/log.
+                cmd = (
+                    f"ssh {ssh_opts} {target} "
+                    f"'cat > {remote_dir}/secrets/{fname} <<EOF\n{value}\nEOF'"
+                )
+                proc = await asyncio.create_subprocess_shell(
+                    cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    return {
+                        "success": False,
+                        "message": f"Failed to write secret {name}: {stderr.decode()}",
+                    }
+            # Lock down permissions on the secrets dir.
+            proc = await asyncio.create_subprocess_shell(
+                f"ssh {ssh_opts} {target} 'chmod -R 600 {remote_dir}/secrets'",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             await proc.communicate()
 

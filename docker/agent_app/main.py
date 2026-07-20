@@ -62,30 +62,48 @@ _GOOGLE_MODELS = {
 }
 
 
+def _secret(provider_env: str) -> Optional[str]:
+    """Read an API key from an env var or, if set, from a secret file.
+
+    A ``*_API_KEY_FILE`` env var pointing at a file takes precedence; the file
+    contents (stripped) are used as the key so secrets can be mounted as files
+    instead of being exposed in the container's environment.
+    """
+    file_env = provider_env + "_FILE"
+    path = os.getenv(file_env)
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "r") as fh:
+                return fh.read().strip()
+        except OSError:
+            return None
+    return os.getenv(provider_env)
+
+
 def _resolve_llm() -> Optional[dict]:
     """Return (base_url, api_key, model) for the first configured provider."""
-    if os.getenv("OPENROUTER_API_KEY"):
+    if _secret("OPENROUTER_API_KEY"):
         return {
             "base_url": "https://openrouter.ai/api/v1",
             "api_key": os.getenv("OPENROUTER_API_KEY"),
             "model": os.getenv("OPENROUTER_MODEL", "tencent/hy3:free"),
         }
-    if os.getenv("OPENAI_API_KEY"):
+    if _secret("OPENAI_API_KEY"):
         return {
             "base_url": "https://api.openai.com/v1",
-            "api_key": os.getenv("OPENAI_API_KEY"),
+            "api_key": _secret("OPENAI_API_KEY"),
             "model": _OPENAI_MODELS.get(os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "gpt-4o-mini"),
         }
-    if os.getenv("ANTHROPIC_API_KEY"):
+    if _secret("ANTHROPIC_API_KEY"):
         return {
             "base_url": "https://api.anthropic.com/v1",
-            "api_key": os.getenv("ANTHROPIC_API_KEY"),
+            "api_key": _secret("ANTHROPIC_API_KEY"),
             "model": _ANTHROPIC_MODELS.get(os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet"), "claude-3-5-sonnet-latest"),
         }
-    if os.getenv("GOOGLE_API_KEY"):
+    if _secret("GOOGLE_API_KEY"):
         return {
             "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "api_key": os.getenv("GOOGLE_API_KEY"),
+            "api_key": _secret("GOOGLE_API_KEY"),
             "model": _GOOGLE_MODELS.get(os.getenv("GOOGLE_MODEL", "gemini-1.5-flash"), "gemini-1.5-flash"),
         }
     return None

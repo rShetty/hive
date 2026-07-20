@@ -22,6 +22,21 @@ import json
 
 router = APIRouter(prefix="/api", tags=["deploy"])
 
+
+def _normalize_model_key(model_key) -> dict:
+    """Normalise an LLM model_key into a flat {provider: key} map.
+
+    Accepts both shapes the frontend has sent historically:
+      - flat:  {"openrouter": "sk-..."}
+      - nested: {"provider": "openrouter", "key": "sk-..."}
+    Unknown shapes are passed through untouched.
+    """
+    if not model_key or not isinstance(model_key, dict):
+        return {}
+    if "provider" in model_key and "key" in model_key:
+        return {str(model_key["provider"]): model_key["key"]}
+    return {str(k): v for k, v in model_key.items()}
+
 # Encryption key for API keys — MUST be set in production.
 # Generating a fallback for local dev only; data encrypted with this key
 # becomes unreadable if the process restarts.
@@ -645,9 +660,10 @@ async def deploy_hosted_agent(
 
     # Persist config (LLM key + MCP servers + framework) encrypted.
     mcp_list = [s.model_dump() for s in req.mcp_servers]
+    flat_model_key = _normalize_model_key(req.model_key)
     agent.config_encrypted = fernet.encrypt(json.dumps({
         "framework": req.framework,
-        "model_key": req.model_key,
+        "model_key": flat_model_key,
         "mcp_servers": mcp_list,
     }).encode()).decode()
 
@@ -698,7 +714,7 @@ async def deploy_hosted_agent(
         "google": "GOOGLE_API_KEY",
         "cohere": "COHERE_API_KEY",
     }
-    for _prov, _val in (req.model_key or {}).items():
+    for _prov, _val in _normalize_model_key(req.model_key).items():
         _env = _KEY_ENV_MAP.get(_prov.lower())
         if _env and _val:
             env_vars[_env] = _val

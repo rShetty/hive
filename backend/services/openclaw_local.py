@@ -163,6 +163,13 @@ async def rehydrate_local_agents(db) -> int:
         "cohere": "COHERE_API_KEY",
     }
 
+    def _flat_keys(model_key) -> dict:
+        if not isinstance(model_key, dict):
+            return {}
+        if "provider" in model_key and "key" in model_key:
+            return {str(model_key["provider"]): model_key["key"]}
+        return {str(k): v for k, v in model_key.items()}
+
     result = await db.execute(
         select(Agent).where(Agent.container_id.like("proc-openclaw-%"))
     )
@@ -176,7 +183,7 @@ async def rehydrate_local_agents(db) -> int:
             continue
 
         cfg = decrypt_json(agent.config_encrypted) or {}
-        model_key = cfg.get("model_key") or {}
+        model_key = _flat_keys(cfg.get("model_key"))
         # Resolve skill names from the join table.
         skill_rows = (await db.execute(
             select(Skill.name).join(

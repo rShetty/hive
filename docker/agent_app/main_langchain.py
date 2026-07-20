@@ -20,6 +20,13 @@ app = FastAPI(title="LangChain Agent")
 AGENT_ID = os.getenv("AGENT_ID", "unknown")
 AGENT_NAME = os.getenv("AGENT_NAME", "Unknown Agent")
 SKILLS = [s for s in os.getenv("SKILLS", "").split(",") if s]
+SKILL_DEFINITIONS: list[dict] = []
+try:
+    _sd = json.loads(os.getenv("SKILL_DEFINITIONS", "[]") or "[]")
+    if isinstance(_sd, list):
+        SKILL_DEFINITIONS = _sd
+except Exception:
+    pass
 HIVE_URL = os.getenv("HIVE_URL", "")
 HIVE_API_KEY = os.getenv("HIVE_API_KEY", "")
 INSTANCE_ID = os.getenv("INSTANCE_ID", "")
@@ -131,12 +138,12 @@ def _get_langchain_tools():
         tool_desc = t.get("description", "") or f"Tool {t.get('name')}"
 
         @tool(name=qualified_name, description=tool_desc)
-        async def _tool_func(arguments: str = "{}", _qn: str = qualified_name) -> str:
+        def _tool_func(arguments: str = "{}", _qn: str = qualified_name) -> str:
             try:
                 args = json.loads(arguments) if isinstance(arguments, str) else arguments
             except Exception:
                 args = {}
-            return await MCP_MANAGER.call(_qn, args)
+            return MCP_MANAGER.call_sync(_qn, args)
 
         tools.append(_tool_func)
 
@@ -204,14 +211,21 @@ from main import DASHBOARD_HTML
 
 @app.on_event("startup")
 async def startup():
+    import asyncio as _asyncio
     _build_mcp()
     if MCP_MANAGER:
+        MCP_MANAGER._main_loop = _asyncio.get_running_loop()
         await MCP_MANAGER.connect_all()
 
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return DASHBOARD_HTML.format(agent_name=AGENT_NAME)
+    return DASHBOARD_HTML.format(
+        agent_name=AGENT_NAME,
+        agent_id=AGENT_ID,
+        hive_url=os.getenv("MARKETPLACE_URL") or os.getenv("HIVE_URL", "https://hive.rajeev.me"),
+        start_time=_start_time.isoformat(),
+    )
 
 
 @app.get("/status")
@@ -246,11 +260,23 @@ async def skills():
     return {"skills": SKILLS}
 
 
+def _build_system_prompt(base: str = "") -> str:
+    prompt = base or f"You are {AGENT_NAME}, a helpful AI agent."
+    skill_instructions = [
+        s["definition"]["instructions"]
+        for s in SKILL_DEFINITIONS
+        if s.get("definition", {}).get("kind") == "prompt" and s["definition"].get("instructions")
+    ]
+    if skill_instructions:
+        prompt += "\n\nYour capabilities:\n" + "\n".join(f"- {inst}" for inst in skill_instructions)
+    return prompt
+
+
 @app.post("/invoke")
 async def invoke(request: Dict):
     task = request.get("task", request.get("input", ""))
     _log_activity("invoke", f"Task: {str(task)[:80]}")
-    output = await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent.")
+    output = await _call_llm(task, system=_build_system_prompt())
     return {
         "status": "success",
         "agent_id": AGENT_ID,
@@ -306,7 +332,7 @@ async def _run_delegation(delegation_id: str, task: str, callback_url: str | Non
 
         await asyncio.sleep(0.5)
         result_payload = {
-            "output": await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent."),
+            "output": await _call_llm(task, system=_build_system_prompt()),
             "agent_id": AGENT_ID,
         }
 

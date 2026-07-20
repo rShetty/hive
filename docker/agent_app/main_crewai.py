@@ -20,6 +20,13 @@ app = FastAPI(title="CrewAI Agent")
 AGENT_ID = os.getenv("AGENT_ID", "unknown")
 AGENT_NAME = os.getenv("AGENT_NAME", "Unknown Agent")
 SKILLS = [s for s in os.getenv("SKILLS", "").split(",") if s]
+SKILL_DEFINITIONS: list[dict] = []
+try:
+    _sd = json.loads(os.getenv("SKILL_DEFINITIONS", "[]") or "[]")
+    if isinstance(_sd, list):
+        SKILL_DEFINITIONS = _sd
+except Exception:
+    pass
 HIVE_URL = os.getenv("HIVE_URL", "")
 HIVE_API_KEY = os.getenv("HIVE_API_KEY", "")
 INSTANCE_ID = os.getenv("INSTANCE_ID", "")
@@ -138,16 +145,7 @@ def _get_crewai_tools():
                     args = json.loads(arguments) if isinstance(arguments, str) else arguments
                 except Exception:
                     args = {}
-                # CrewAI tools run synchronously, but MCP calls are async
-                # Use asyncio.run_coroutine_threadsafe if needed
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(asyncio.run, MCP_MANAGER.call(qualified_name, args))
-                        return future.result(timeout=30)
-                else:
-                    return loop.run_until_complete(MCP_MANAGER.call(qualified_name, args))
+                return MCP_MANAGER.call_sync(qualified_name, args)
 
         tools.append(MCPCrewTool())
 
@@ -203,6 +201,8 @@ from main import DASHBOARD_HTML
 
 @app.on_event("startup")
 async def startup():
+    import asyncio as _asyncio
+
     # Expose secret files as env vars for litellm (reads OPENROUTER_API_KEY directly).
     for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
         if not os.getenv(key):
@@ -212,12 +212,18 @@ async def startup():
                     os.environ[key] = fh.read().strip()
     _build_mcp()
     if MCP_MANAGER:
+        MCP_MANAGER._main_loop = _asyncio.get_running_loop()
         await MCP_MANAGER.connect_all()
 
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return DASHBOARD_HTML.format(agent_name=AGENT_NAME)
+    return DASHBOARD_HTML.format(
+        agent_name=AGENT_NAME,
+        agent_id=AGENT_ID,
+        hive_url=os.getenv("MARKETPLACE_URL") or os.getenv("HIVE_URL", "https://hive.rajeev.me"),
+        start_time=_start_time.isoformat(),
+    )
 
 
 @app.get("/status")
@@ -252,11 +258,23 @@ async def skills():
     return {"skills": SKILLS}
 
 
+def _build_system_prompt(base: str = "") -> str:
+    prompt = base or f"You are {AGENT_NAME}, a helpful AI agent."
+    skill_instructions = [
+        s["definition"]["instructions"]
+        for s in SKILL_DEFINITIONS
+        if s.get("definition", {}).get("kind") == "prompt" and s["definition"].get("instructions")
+    ]
+    if skill_instructions:
+        prompt += "\n\nYour capabilities:\n" + "\n".join(f"- {inst}" for inst in skill_instructions)
+    return prompt
+
+
 @app.post("/invoke")
 async def invoke(request: Dict):
     task = request.get("task", request.get("input", ""))
     _log_activity("invoke", f"Task: {str(task)[:80]}")
-    output = await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent.")
+    output = await _call_llm(task, system=_build_system_prompt())
     return {
         "status": "success",
         "agent_id": AGENT_ID,
@@ -312,7 +330,7 @@ async def _run_delegation(delegation_id: str, task: str, callback_url: str | Non
 
         await asyncio.sleep(0.5)
         result_payload = {
-            "output": await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent."),
+            "output": await _call_llm(task, system=_build_system_prompt()),
             "agent_id": AGENT_ID,
         }
 

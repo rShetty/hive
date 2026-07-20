@@ -214,13 +214,20 @@ async def rehydrate_local_agents(db) -> int:
         model_key = _flat_keys(cfg.get("model_key"))
         # Resolve skill names from the join table.
         skill_rows = (await db.execute(
-            select(Skill.name).join(
+            select(Skill).join(
                 AgentSkill, AgentSkill.skill_id == Skill.id
             ).where(AgentSkill.agent_id == agent.id)
         )).scalars().all()
-        skills = list(skill_rows) or [s.get("name") for s in (cfg.get("mcp_servers") or [])]
+        skills = [s.name for s in skill_rows] or [s.get("name") for s in (cfg.get("mcp_servers") or [])]
 
-        env_vars = {"SKILLS": ",".join([s for s in skills if s])}
+        env_vars = {
+            "SKILLS": ",".join([s for s in skills if s]),
+            "SKILL_DEFINITIONS": json.dumps([
+                {"name": s.name, "display_name": s.display_name,
+                 "description": s.description, "definition": s.definition}
+                for s in skill_rows if s.definition
+            ]),
+        }
         for prov, val in model_key.items():
             env = _KEY_ENV_MAP.get(str(prov).lower())
             if env and val:

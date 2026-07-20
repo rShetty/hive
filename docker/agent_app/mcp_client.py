@@ -302,6 +302,29 @@ class MCPManager:
             return f"[error] {qualified_name} failed: {e}"
         return self._format_result(res)
 
+    def call_sync(self, qualified_name: str, arguments: dict, timeout: float = 30.0) -> str:
+        """Synchronous wrapper around async ``call()``.
+
+        Submits the coroutine to the main event loop (which runs in the
+        main thread) and waits for the result. Safe to call from CrewAI /
+        LangSync tool ``_run()`` methods that execute in worker threads.
+        """
+        import concurrent.futures
+        _main_loop = getattr(self, "_main_loop", None)
+        if _main_loop is None or _main_loop.is_closed():
+            # Fallback: create a temporary loop (shouldn't happen in practice)
+            try:
+                return asyncio.run(self.call(qualified_name, arguments))
+            except RuntimeError:
+                # Already inside a running loop — use a thread
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(asyncio.run, self.call(qualified_name, arguments))
+                    return future.result(timeout=timeout)
+        future = asyncio.run_coroutine_threadsafe(
+            self.call(qualified_name, arguments), _main_loop
+        )
+        return future.result(timeout=timeout)
+
     @staticmethod
     def _format_result(res: Any) -> str:
         if isinstance(res, str):

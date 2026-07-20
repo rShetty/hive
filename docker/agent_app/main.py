@@ -16,6 +16,13 @@ app = FastAPI(title="OpenClaw Agent")
 AGENT_ID = os.getenv("AGENT_ID", "unknown")
 AGENT_NAME = os.getenv("AGENT_NAME", "Unknown Agent")
 SKILLS = [s for s in os.getenv("SKILLS", "").split(",") if s]
+SKILL_DEFINITIONS: list[dict] = []
+try:
+    _sd = json.loads(os.getenv("SKILL_DEFINITIONS", "[]") or "[]")
+    if isinstance(_sd, list):
+        SKILL_DEFINITIONS = _sd
+except Exception:
+    pass
 HIVE_URL = os.getenv("HIVE_URL", "")
 HIVE_API_KEY = os.getenv("HIVE_API_KEY", "")
 INSTANCE_ID = os.getenv("INSTANCE_ID", "")
@@ -595,6 +602,19 @@ async def root():
     return {"agent_id": AGENT_ID, "name": AGENT_NAME, "skills": SKILLS, "status": "running"}
 
 
+def _build_system_prompt(base: str = "") -> str:
+    """Build system prompt with skill instructions injected."""
+    prompt = base or f"You are {AGENT_NAME}, a helpful AI agent."
+    skill_instructions = [
+        s["definition"]["instructions"]
+        for s in SKILL_DEFINITIONS
+        if s.get("definition", {}).get("kind") == "prompt" and s["definition"].get("instructions")
+    ]
+    if skill_instructions:
+        prompt += "\n\nYour capabilities:\n" + "\n".join(f"- {inst}" for inst in skill_instructions)
+    return prompt
+
+
 @app.get("/skills")
 async def list_skills():
     return {"skills": SKILLS}
@@ -604,7 +624,7 @@ async def list_skills():
 async def invoke(request: Dict):
     task = request.get("task", request.get("input", ""))
     _log_activity("invoke", f"Task: {str(task)[:80]}")
-    output = await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent.")
+    output = await _call_llm(task, system=_build_system_prompt())
     return {
         "status": "success",
         "agent_id": AGENT_ID,
@@ -680,7 +700,7 @@ async def _run_delegation(delegation_id: str, task: str, callback_url: str | Non
         await asyncio.sleep(0.5)
 
         result_payload = {
-            "output": await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent."),
+            "output": await _call_llm(task, system=_build_system_prompt()),
             "agent_id": AGENT_ID,
         }
 
@@ -741,6 +761,7 @@ async def startup_event():
     try:
         _build_mcp()
         if MCP_MANAGER is not None:
+            MCP_MANAGER._main_loop = asyncio.get_running_loop()
             await MCP_MANAGER.connect_all()
             for st in MCP_MANAGER.status:
                 _log_activity("mcp", f"MCP {st['name']}: {'connected' if st['connected'] else 'failed'} "

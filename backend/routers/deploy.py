@@ -497,6 +497,11 @@ async def deploy_openclaw_agent(
             env_vars = dict(req.extra_env or {})
             # Forward the resolved skill names so the running agent knows its skills.
             env_vars["SKILLS"] = ",".join([s.name for s in resolved_skills])
+            env_vars["SKILL_DEFINITIONS"] = json.dumps([
+                {"name": s.name, "display_name": s.display_name,
+                 "description": s.description, "definition": s.definition}
+                for s in resolved_skills if s.definition
+            ])
 
             # Inject the owner's saved model API keys so the agent can make
             # real LLM calls. Map provider names → the env vars the OpenClaw
@@ -727,6 +732,11 @@ async def deploy_hosted_agent(
     # server-level key is used as a fallback by the runtime.
     env_vars = {
         "SKILLS": ",".join([s.name for s in resolved_skills]),
+        "SKILL_DEFINITIONS": json.dumps([
+            {"name": s.name, "display_name": s.display_name,
+             "description": s.description, "definition": s.definition}
+            for s in resolved_skills if s.definition
+        ]),
     }
     _KEY_ENV_MAP = {
         "openrouter": "OPENROUTER_API_KEY",

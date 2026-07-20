@@ -227,6 +227,11 @@ class MCPServerCreate(HiveBaseModel):
     # For stdio transport: command + optional env used to launch the server.
     command: Optional[str] = None
     env: Optional[Dict[str, str]] = None
+    # Pre-registered OAuth client credentials (for providers without DCR, e.g.
+    # GitHub). When supplied the connect flow skips dynamic registration.
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    oauth_scopes: Optional[str] = None
 
     @model_validator(mode="after")
     def _check_transport(self):
@@ -252,6 +257,9 @@ class MCPServerUpdate(HiveBaseModel):
     headers: Optional[Dict[str, str]] = None
     command: Optional[str] = None
     env: Optional[Dict[str, str]] = None
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    oauth_scopes: Optional[str] = None
 
 
 class MCPServerResponse(HiveBaseModel):
@@ -264,6 +272,7 @@ class MCPServerResponse(HiveBaseModel):
     auth_type: str = "headers"
     oauth_connected: bool = False
     command: Optional[str] = None
+    oauth_client_id: Optional[str] = None
     visibility: str = "private"
     is_active: bool = True
     created_at: Optional[datetime] = None

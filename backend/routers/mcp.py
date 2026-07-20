@@ -42,6 +42,7 @@ def _to_response(server: MCPServer, agent_count: int = None) -> MCPServerRespons
         auth_type=server.auth_type,
         oauth_connected=bool(server.oauth_encrypted),
         command=server.command,
+        oauth_client_id=server.oauth_client_id,
         visibility=server.visibility,
         is_active=server.is_active,
         created_at=server.created_at,
@@ -90,6 +91,9 @@ async def create_mcp_server(
         command=data.command,
         env_encrypted=env_enc,
         headers_encrypted=headers_enc,
+        oauth_client_id=data.oauth_client_id,
+        oauth_client_secret=data.oauth_client_secret,
+        oauth_scopes=data.oauth_scopes,
         visibility="private",
     )
     db.add(server)
@@ -133,6 +137,12 @@ async def update_mcp_server(
         server.env_encrypted = encrypt_json(data.env) if data.env else None
     if data.headers is not None:
         server.headers_encrypted = encrypt_json(data.headers) if data.headers else None
+    if data.oauth_client_id is not None:
+        server.oauth_client_id = data.oauth_client_id
+    if data.oauth_client_secret is not None:
+        server.oauth_client_secret = data.oauth_client_secret
+    if data.oauth_scopes is not None:
+        server.oauth_scopes = data.oauth_scopes
     await db.commit()
     await db.refresh(server)
     return _to_response(server)

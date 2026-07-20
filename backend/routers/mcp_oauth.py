@@ -59,8 +59,29 @@ def _gen_pkce() -> tuple[str, str]:
 
 
 async def _discover(server: MCPServer) -> dict:
-    """Discover OAuth metadata; fall back to conventional endpoints."""
+    """Discover OAuth metadata; fall back to conventional endpoints.
+
+    Returns a dict with at least ``authorization_endpoint`` and
+    ``token_endpoint``. Providers that do not expose metadata (e.g. GitHub's
+    MCP server) are detected by host and given hardcoded GitHub endpoints.
+    """
     base = server.url.rstrip("/")
+    host = urlparse(base).netloc.lower()
+
+    # GitHub's remote MCP server does not publish OAuth metadata and does not
+    # support dynamic client registration. It authenticates against GitHub's
+    # own OAuth endpoints and requires a ``resource`` parameter equal to the
+    # MCP server URL so the issued token is scoped to that resource.
+    if "githubcopilot.com" in host:
+        return {
+            "issuer": "https://github.com",
+            "authorization_endpoint": "https://github.com/login/oauth/authorize",
+            "token_endpoint": "https://github.com/login/oauth/access_token",
+            "resource": base + "/",
+            "scopes_supported": ["read:org", "repo", "workflow"],
+            "no_dynamic_registration": True,
+        }
+
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         meta_url = urljoin(base + "/", ".well-known/oauth-authorization-server")
         try:
@@ -84,14 +105,35 @@ async def _discover(server: MCPServer) -> dict:
 
 
 async def _register_client(server: MCPServer, meta: dict, redirect_uri: str) -> tuple[str, Optional[str]]:
-    """Dynamically register a client if no client_id is stored yet."""
+    """Resolve a client id/secret.
+
+    Order of precedence:
+      1. Pre-registered credentials stored on the MCPServer row
+         (``oauth_client_id`` / ``oauth_client_secret``) — used for providers
+         without dynamic client registration, e.g. GitHub.
+      2. Credentials already obtained from a previous DCR (in oauth_encrypted).
+      3. Dynamic client registration against the provider's registration
+         endpoint (when supported).
+    """
+    if server.oauth_client_id:
+        return server.oauth_client_id, server.oauth_client_secret
+
     stored = decrypt_json(server.oauth_encrypted) or {}
     if stored.get("client_id"):
         return stored["client_id"], stored.get("client_secret")
 
+    # Providers that don't support DCR require the user to register an app and
+    # supply its credentials via the server record.
+    if meta.get("no_dynamic_registration"):
+        raise HTTPException(
+            400,
+            "This provider does not support automatic client registration. "
+            "Register an OAuth App and supply its client_id/client_secret on the MCP server.",
+        )
+
     reg_ep = meta.get("registration_endpoint")
     if not reg_ep:
-        return "", None
+        raise HTTPException(502, "OAuth client registration is not supported by this provider")
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         r = await client.post(
             reg_ep,
@@ -135,20 +177,24 @@ async def connect(
     auth_ep = meta.get("authorization_endpoint")
     if not auth_ep:
         raise HTTPException(502, "Could not discover OAuth authorization endpoint")
-    client_id, _ = await _register_client(server, meta, redirect_uri)
+    client_id, client_secret = await _register_client(server, meta, redirect_uri)
     await db.commit()
 
     verifier, challenge = _gen_pkce()
     state = secrets.token_urlsafe(24)
+    resource = meta.get("resource")
     _STATE[state] = {
         "server_id": server_id,
         "user_id": current_user.id,
         "verifier": verifier,
         "token_endpoint": meta.get("token_endpoint"),
         "client_id": client_id,
+        "client_secret": client_secret,
         "redirect_uri": redirect_uri,
+        "resource": resource,
     }
 
+    scopes = server.oauth_scopes or " ".join(meta.get("scopes_supported") or ["openid"])
     params = {
         "response_type": "code",
         "client_id": client_id,
@@ -156,8 +202,11 @@ async def connect(
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": state,
-        "scope": (meta.get("scopes_supported") or ["openid"])[0],
+        "scope": scopes,
     }
+    # GitHub's MCP server requires the token to be scoped to the resource.
+    if resource:
+        params["resource"] = resource
     auth_url = auth_ep + "?" + urlencode(params)
     return {"authorize_url": auth_url, "state": state}
 
@@ -182,6 +231,12 @@ async def callback(
         "client_id": flow["client_id"],
         "code_verifier": flow["verifier"],
     }
+    # GitHub (and some others) require the same resource parameter used during
+    # authorization, plus the client secret for confidential clients.
+    if flow.get("resource"):
+        data["resource"] = flow["resource"]
+    if flow.get("client_secret"):
+        data["client_secret"] = flow["client_secret"]
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         r = await client.post(flow["token_endpoint"], data=data)
         if r.status_code >= 400:
@@ -200,6 +255,9 @@ async def callback(
         "expires_in": tokens.get("expires_in"),
         "scope": tokens.get("scope"),
         "token_endpoint": flow.get("token_endpoint"),
+        "resource": flow.get("resource"),
+        "client_id": flow.get("client_id"),
+        "client_secret": flow.get("client_secret"),
     })
     server.oauth_encrypted = encrypt_json(blob)
     server.auth_type = "oauth"
@@ -227,14 +285,16 @@ async def refresh(
         raise HTTPException(400, "No refresh token available")
 
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        r = await client.post(
-            token_endpoint,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": blob.get("client_id"),
-            },
-        )
+        _rdata = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": blob.get("client_id"),
+        }
+        if blob.get("client_secret"):
+            _rdata["client_secret"] = blob["client_secret"]
+        if blob.get("resource"):
+            _rdata["resource"] = blob["resource"]
+        r = await client.post(token_endpoint, data=_rdata)
         if r.status_code >= 400:
             raise HTTPException(502, f"Refresh failed: {r.status_code}")
         tokens = r.json()

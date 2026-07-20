@@ -70,8 +70,18 @@
                         <label class="field-label">Auth headers <span class="text-gray-400 font-normal">(JSON, stored encrypted)</span></label>
                         <textarea x-model="form.headers" rows="3" placeholder='{"Authorization":"Bearer ..."}' class="field font-mono text-xs"></textarea>
                     </div>
-                    <div x-show="form.auth_type === 'oauth'" class="p-3 bg-indigo-50 rounded-lg text-sm text-indigo-700">
-                        OAuth servers are authorized via the <b>Connect</b> button after saving — no manual headers needed.
+                    <div x-show="form.auth_type === 'oauth'">
+                        <div class="p-3 bg-indigo-50 rounded-lg text-sm text-indigo-700 mb-3">
+                            Authorize via the <b>Connect</b> button after saving. Some providers
+                            (e.g. GitHub's MCP) don't support automatic registration — supply a
+                            pre-registered OAuth App's client id & secret below.
+                        </div>
+                        <label class="field-label">OAuth Client ID <span class="text-gray-400 font-normal">(optional)</span></label>
+                        <input type="text" x-model="form.oauth_client_id" placeholder="Iv1.xxxxx" class="field font-mono text-xs">
+                        <label class="field-label mt-2">OAuth Client Secret <span class="text-gray-400 font-normal">(optional)</span></label>
+                        <input type="password" x-model="form.oauth_client_secret" placeholder="••••••••" class="field font-mono text-xs">
+                        <label class="field-label mt-2">Scopes <span class="text-gray-400 font-normal">(space-separated, optional)</span></label>
+                        <input type="text" x-model="form.oauth_scopes" placeholder="repo read:org" class="field font-mono text-xs">
                     </div>
                 </div>
                 <div x-show="error" class="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm" x-text="error"></div>
@@ -138,7 +148,7 @@
                 servers: [], agents: [],
                 showModal: false, showGrant: false, editing: false, saving: false,
                 error: '', grantError: '', grantSaving: false, grantServer: null, grantSelection: [],
-                form: { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'' },
+                form: { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'', oauth_client_id:'', oauth_client_secret:'', oauth_scopes:'' },
                 init() { this.load(); this.loadAgents(); },
                 async load() {
                     const res = await apiFetch('/api/mcp-servers');
@@ -148,8 +158,8 @@
                     const res = await apiFetch('/api/agents');
                     if (res.ok) this.agents = await res.json();
                 },
-                openCreate() { this.editing = false; this.error = ''; this.form = { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'' }; this.showModal = true; },
-                editServer(srv) { this.editing = true; this._id = srv.id; this.error=''; this.form = { name: srv.name, url: srv.url||'', description: srv.description||'', headers:'', transport: srv.transport||'http', auth_type: srv.auth_type||'headers', command: srv.command||'', env:'' }; this.showModal = true; },
+                openCreate() { this.editing = false; this.error = ''; this.form = { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'', oauth_client_id:'', oauth_client_secret:'', oauth_scopes:'' }; this.showModal = true; },
+                editServer(srv) { this.editing = true; this._id = srv.id; this.error=''; this.form = { name: srv.name, url: srv.url||'', description: srv.description||'', headers:'', transport: srv.transport||'http', auth_type: srv.auth_type||'headers', command: srv.command||'', env:'', oauth_client_id: srv.oauth_client_id||'', oauth_client_secret:'', oauth_scopes: srv.oauth_scopes||'' }; this.showModal = true; },
                 closeModal() { this.showModal = false; this.editing = false; },
                 async save() {
                     this.saving = true; this.error = '';
@@ -163,7 +173,7 @@
                     if (this.form.env.trim()) {
                         try { env = JSON.parse(this.form.env); } catch(e) { this.error = 'Env must be valid JSON'; this.saving=false; return; }
                     }
-                    const body = { name: this.form.name, url: this.form.url, description: this.form.description, headers, transport: this.form.transport, auth_type: this.form.auth_type, command: this.form.command, env };
+                    const body = { name: this.form.name, url: this.form.url, description: this.form.description, headers, transport: this.form.transport, auth_type: this.form.auth_type, command: this.form.command, env, oauth_client_id: this.form.oauth_client_id || undefined, oauth_client_secret: this.form.oauth_client_secret || undefined, oauth_scopes: this.form.oauth_scopes || undefined };
                     let res;
                     if (this.editing) res = await apiFetch('/api/mcp-servers/' + this._id, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
                     else res = await apiFetch('/api/mcp-servers', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });

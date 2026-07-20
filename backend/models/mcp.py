@@ -41,6 +41,14 @@ class MCPServer(Base):
     # connect flow; used to build the Authorization header at runtime.
     oauth_encrypted = Column(Text, nullable=True)
 
+    # Pre-registered OAuth client credentials (for providers that do NOT
+    # support dynamic client registration, e.g. GitHub's MCP server). When set,
+    # the connect flow skips DCR and uses these directly. Stored encrypted.
+    oauth_client_id = Column(Text, nullable=True)
+    oauth_client_secret = Column(Text, nullable=True)
+    # Optional scopes to request (space-separated). Provider-specific.
+    oauth_scopes = Column(String(500), nullable=True)
+
     # Visibility: "private" (owner only) — MCP servers are not shared publicly
     # by default; access is granted per-agent via AgentMCPAccess.
     visibility = Column(String(20), default="private")

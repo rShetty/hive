@@ -382,6 +382,17 @@ function agentDash() {{
     activity: [],
     agentId: '{agent_id}',
 
+    basePath() {{
+      // Resolve API calls relative to the dashboard's mount point so the
+      // same dashboard works both standalone (e.g. /invoke) and behind the
+      // Hive proxy (/a/{{slug}}/invoke). Strips any trailing filename and
+      // ensures a trailing slash.
+      let p = window.location.pathname;
+      if (!p.endsWith('/')) p = p.slice(0, p.lastIndexOf('/') + 1);
+      if (!p.endsWith('/')) p += '/';
+      return p;
+    }},
+
     async init() {{
       await this.poll();
       setInterval(() => this.poll(), 15000);
@@ -391,7 +402,7 @@ function agentDash() {{
 
     async poll() {{
       try {{
-        const r = await fetch('/status');
+        const r = await fetch(this.basePath() + 'status');
         if (r.ok) {{
           const d = await r.json();
           this.online = true;
@@ -421,7 +432,7 @@ function agentDash() {{
       }});
 
       try {{
-        const r = await fetch('/invoke', {{
+        const r = await fetch(this.basePath() + 'invoke', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json' }},
           body: JSON.stringify({{ task: text, context: {{}} }}),

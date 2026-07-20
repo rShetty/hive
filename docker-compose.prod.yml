@@ -7,7 +7,8 @@ services:
       - DATABASE_URL=sqlite+aiosqlite:////app/data/agent_marketplace.db
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY before starting}
       - AGENT_IMAGE=agent-marketplace-agent:latest
-      - MARKETPLACE_URL=${MARKETPLACE_URL:-https://hive.rajeev.me}
+      - MARKETPLACE_URL=https://hive.rajeev.me
+      - HIVE_DOMAIN=hive.rajeev.me
       - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY before starting}
       - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-openclaw/openclaw:latest}
     volumes:

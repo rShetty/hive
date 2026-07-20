@@ -301,7 +301,7 @@
                                 name: this.agent.name,
                                 description: this.agent.description,
                                 framework: this.byoa.framework,
-                                model_key: { provider: this.byoa.keyProvider, key: this.byoa.keyValue },
+                                model_key: this.byoa.keyValue ? { [this.byoa.keyProvider]: this.byoa.keyValue } : {},
                                 skill_names: this.byoa.tools,
                                 mcp_servers: mcpServers,
                                 mcp_server_ids: this.byoa.mcpIds,

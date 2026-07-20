@@ -112,6 +112,23 @@
                                 class="btn btn-soft btn-sm">+ Add MCP Server</button>
                     </div>
 
+                    <!-- MCP servers from your registry -->
+                    <div>
+                        <label class="field-label">Your MCP Servers <span class="text-gray-400 font-normal">(grant access to this agent)</span></label>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <template x-for="srv in mcpServers" :key="srv.id">
+                                <label class="flex items-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 text-sm transition"
+                                        :class="byoa.mcpIds.includes(srv.id) ? 'border-purple-400 bg-purple-50/70 ring-1 ring-purple-300' : 'border-gray-200'">
+                                    <input type="checkbox" :value="srv.id" x-model="byoa.mcpIds" class="mr-2 accent-purple-600">
+                                    <span x-text="srv.name"></span>
+                                </label>
+                            </template>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1" x-show="mcpServers.length === 0">
+                            None yet — <a href="/mcp" class="text-purple-600 underline">add one in the MCP registry</a>.
+                        </p>
+                    </div>
+
                     <div>
                         <label class="field-label">Tags (comma-separated)</label>
                         <input type="text" x-model="byoa.tagsRaw" placeholder="research, assistant" class="field">
@@ -248,21 +265,26 @@
                 step: 0,
                 agent: { name: '', description: '' },
                 skills: [],
+                mcpServers: [],
                 deploying: false,
                 deployStatus: '',
                 deployProgress: 0,
                 error: '',
-                byoa: { framework: 'openclaw', keyProvider: 'openrouter', keyValue: '', tools: [], mcpServers: [], tagsRaw: '' },
+                byoa: { framework: 'openclaw', keyProvider: 'openrouter', keyValue: '', tools: [], mcpServers: [], mcpIds: [], tagsRaw: '' },
                 byoaResult: null,
                 openclawDefaults: ['terminal','file_ops','web_extract','planning','code_review'],
                 openclaw: { extraSkills: [], tagsRaw: '' },
                 openclawResult: null,
 
-                init() { this.checkAuth(); this.loadSkills(); },
+                init() { this.checkAuth(); this.loadSkills(); this.loadMcp(); },
                 checkAuth() { if (!localStorage.getItem('token')) window.location.href = '/login'; },
                 async loadSkills() {
                     try { const r = await apiFetch('/api/skills'); if (r.ok) this.skills = await r.json(); }
                     catch (e) { console.error('Failed to load skills:', e); }
+                },
+                async loadMcp() {
+                    try { const r = await apiFetch('/api/mcp-servers'); if (r.ok) this.mcpServers = await r.json(); }
+                    catch (e) { console.error('Failed to load MCP servers:', e); }
                 },
 
                 // ---- Hosted BYOK ----
@@ -282,6 +304,7 @@
                                 model_key: { provider: this.byoa.keyProvider, key: this.byoa.keyValue },
                                 skill_names: this.byoa.tools,
                                 mcp_servers: mcpServers,
+                                mcp_server_ids: this.byoa.mcpIds,
                                 tags: tags
                             })
                         });

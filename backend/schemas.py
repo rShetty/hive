@@ -66,16 +66,21 @@ class SkillBase(HiveBaseModel):
     tier: str = "core"
     category: str = "general"
     required_env_vars: List[str] = []
+    # definition: {"kind": "prompt"|"tool"|"both", ...}
+    definition: Optional[Dict[str, Any]] = None
 
 
 class SkillCreate(SkillBase):
-    pass
+    visibility: Optional[str] = "private"  # private (default) | platform (admin)
 
 
 class SkillResponse(SkillBase):
     id: str
     is_active: bool
-    
+    source: str = "core"
+    visibility: str = "platform"
+    owner_id: Optional[str] = None
+
     model_config = ConfigDict(from_attributes=True)
 
     @field_validator("is_active", mode="before")
@@ -189,7 +194,9 @@ class HostedAgentRequest(HiveBaseModel):
     model_key: Dict[str, str] = {}
     skill_ids: List[str] = []
     skill_names: List[str] = []
+    # MCP servers: ad-hoc specs and/or references to the user's MCP registry
     mcp_servers: List[MCPServerSpec] = []
+    mcp_server_ids: List[str] = []
     tags: List[str] = []
     capabilities: List[str] = []
 
@@ -202,6 +209,56 @@ class HostedAgentResponse(HiveBaseModel):
     dashboard_url: str
     endpoint_url: str
     status: str
+
+
+# ============== MCP Server Registry Schemas ==============
+
+class MCPServerCreate(HiveBaseModel):
+    name: str
+    url: str
+    description: Optional[str] = None
+    transport: str = "http"          # http | sse
+    # Optional auth headers (sent to the MCP server). Stored encrypted.
+    headers: Optional[Dict[str, str]] = None
+
+
+class MCPServerUpdate(HiveBaseModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    description: Optional[str] = None
+    transport: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+
+
+class MCPServerResponse(HiveBaseModel):
+    id: str
+    owner_id: str
+    name: str
+    url: str
+    description: Optional[str] = None
+    transport: str = "http"
+    visibility: str = "private"
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    # Number of agents currently granted access (populated by the API)
+    agent_count: Optional[int] = None
+
+
+class AgentMCPGrantRequest(HiveBaseModel):
+    # Agent ids to grant/revoke access for (the MCP server is in the URL path).
+    agent_ids: List[str] = []
+    # Optional per-agent auth-header overrides, keyed by agent id.
+    headers: Optional[Dict[str, Dict[str, str]]] = None
+
+
+class AgentMCPAccessResponse(HiveBaseModel):
+    id: str
+    agent_id: str
+    mcp_server_id: str
+    mcp_server_name: Optional[str] = None
+    mcp_server_url: Optional[str] = None
+    enabled: bool = True
+    created_at: Optional[datetime] = None
 
 
 class AgentProfileUpdate(HiveBaseModel):

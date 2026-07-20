@@ -90,6 +90,7 @@ class Agent(Base):
     
     # Relationships
     skills = relationship("AgentSkill", back_populates="agent", cascade="all, delete-orphan")
+    mcp_access = relationship("AgentMCPAccess", back_populates="agent", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Agent {self.name} ({self.status})>"

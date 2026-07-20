@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from database import init_db
-from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config
+from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config, mcp
 from services.skill_catalog import seed_skills
 from middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from middleware.monitoring import MonitoringMiddleware, metrics
@@ -99,6 +99,7 @@ app.include_router(auth.router)
 app.include_router(agents.router)
 app.include_router(agent_api.router)
 app.include_router(skills.router)
+app.include_router(mcp.router)
 app.include_router(deploy.router)
 app.include_router(marketplace.router)
 app.include_router(invites.router)
@@ -288,6 +289,16 @@ async def delegate_legacy(request: Request):
 @app.get("/agent-config")
 async def agent_config_page():
     return _serve_frontend("agent-config.html")
+
+
+@app.get("/skills")
+async def skills_page():
+    return _serve_frontend("skills.html")
+
+
+@app.get("/mcp")
+async def mcp_page():
+    return _serve_frontend("mcp.html")
 
 
 # ── Agent dashboard proxy ─────────────────────────────────────────────────────

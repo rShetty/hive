@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Servers — Hive</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="/css/theme.css" rel="stylesheet">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="mcpApp()" x-init="init()">
+    <div id="nav"></div>
+
+    <main class="max-w-5xl mx-auto px-4 py-8">
+        <header class="mb-6">
+            <h1 class="text-2xl font-semibold text-gray-900">MCP Servers</h1>
+            <p class="text-gray-500 text-sm mt-1">Register Model Context Protocol servers and grant your agents access to them.</p>
+        </header>
+
+        <div class="flex justify-end mb-4">
+            <button @click="openCreate()" class="btn btn-accent">+ Add MCP Server</button>
+        </div>
+
+        <!-- Create / Edit modal -->
+        <div x-show="showModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" x-cloak>
+            <div class="card w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto" @click.away="closeModal()">
+                <h2 class="text-lg font-semibold mb-4" x-text="editing ? 'Edit MCP Server' : 'Add MCP Server'"></h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="field-label">Name *</label>
+                        <input type="text" x-model="form.name" placeholder="GitHub MCP" class="field" :disabled="editing">
+                    </div>
+                    <div>
+                        <label class="field-label">URL * <span class="text-gray-400 font-normal">(http/https)</span></label>
+                        <input type="url" x-model="form.url" placeholder="https://mcp.example.com" class="field">
+                    </div>
+                    <div>
+                        <label class="field-label">Description</label>
+                        <textarea x-model="form.description" rows="2" class="field"></textarea>
+                    </div>
+                    <div>
+                        <label class="field-label">Auth headers <span class="text-gray-400 font-normal">(JSON, stored encrypted)</span></label>
+                        <textarea x-model="form.headers" rows="3" placeholder='{"Authorization":"Bearer ..."}' class="field font-mono text-xs"></textarea>
+                    </div>
+                </div>
+                <div x-show="error" class="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm" x-text="error"></div>
+                <div class="mt-6 flex justify-end gap-2">
+                    <button @click="closeModal()" class="btn btn-ghost">Cancel</button>
+                    <button @click="save()" :disabled="saving" class="btn btn-green" x-text="editing ? 'Save' : 'Add'"></button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Grant modal -->
+        <div x-show="showGrant" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" x-cloak>
+            <div class="card w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto" @click.away="showGrant=false">
+                <h2 class="text-lg font-semibold mb-1">Grant access</h2>
+                <p class="text-sm text-gray-500 mb-4" x-text="grantServer ? grantServer.name : ''"></p>
+                <div class="space-y-2">
+                    <template x-for="agent in agents" :key="agent.id">
+                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
+                            <span class="text-sm" x-text="agent.name"></span>
+                            <input type="checkbox" x-model="grantSelection" :value="agent.id" class="accent-purple-600">
+                        </label>
+                    </template>
+                    <p x-show="!agents.length" class="text-gray-400 text-sm">You have no agents yet.</p>
+                </div>
+                <div x-show="grantError" class="mt-3 p-3 bg-red-50 text-red-700 rounded-lg text-sm" x-text="grantError"></div>
+                <div class="mt-6 flex justify-end gap-2">
+                    <button @click="showGrant=false" class="btn btn-ghost">Cancel</button>
+                    <button @click="applyGrants()" :disabled="grantSaving" class="btn btn-green">Save access</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <template x-for="srv in servers" :key="srv.id">
+                <div class="card p-5">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <h3 class="font-semibold text-gray-900" x-text="srv.name"></h3>
+                            <p class="text-xs text-gray-400 font-mono mt-0.5 truncate" x-text="srv.url"></p>
+                        </div>
+                        <div class="flex gap-1">
+                            <button @click="openGrant(srv)" class="btn btn-soft btn-sm">Access</button>
+                            <button @click="editServer(srv)" class="btn btn-ghost btn-sm">✎</button>
+                            <button @click="remove(srv)" class="btn btn-ghost btn-sm">✕</button>
+                        </div>
+                    </div>
+                    <p class="text-sm text-gray-600 mt-2" x-text="srv.description || 'No description'"></p>
+                    <div class="mt-3 flex items-center gap-2 text-xs text-gray-500">
+                        <span class="badge" x-text="srv.transport"></span>
+                        <span x-text="(srv.agent_count || 0) + ' agent(s) with access'"></span>
+                    </div>
+                </div>
+            </template>
+        </div>
+        <p x-show="!servers.length" class="text-gray-400 text-center py-12">No MCP servers yet.</p>
+    </main>
+
+    <script src="js/app.js"></script>
+    <script>
+        function mcpApp() {
+            return {
+                servers: [], agents: [],
+                showModal: false, showGrant: false, editing: false, saving: false,
+                error: '', grantError: '', grantSaving: false, grantServer: null, grantSelection: [],
+                form: { name:'', url:'', description:'', headers:'' },
+                init() { renderNav({active: 'mcp'}); this.load(); this.loadAgents(); },
+                async load() {
+                    const res = await apiFetch('/api/mcp-servers');
+                    if (res.ok) this.servers = await res.json();
+                },
+                async loadAgents() {
+                    const res = await apiFetch('/api/agents');
+                    if (res.ok) this.agents = await res.json();
+                },
+                openCreate() { this.editing = false; this.error = ''; this.form = { name:'', url:'', description:'', headers:'' }; this.showModal = true; },
+                editServer(srv) { this.editing = true; this._id = srv.id; this.error=''; this.form = { name: srv.name, url: srv.url, description: srv.description||'', headers:'' }; this.showModal = true; },
+                closeModal() { this.showModal = false; this.editing = false; },
+                async save() {
+                    this.saving = true; this.error = '';
+                    let headers = null;
+                    if (this.form.headers.trim()) {
+                        try { headers = JSON.parse(this.form.headers); } catch(e) { this.error = 'Headers must be valid JSON'; this.saving=false; return; }
+                    }
+                    const body = { name: this.form.name, url: this.form.url, description: this.form.description, headers };
+                    let res;
+                    if (this.editing) res = await apiFetch('/api/mcp-servers/' + this._id, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+                    else res = await apiFetch('/api/mcp-servers', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+                    if (res.ok) { this.closeModal(); this.load(); }
+                    else { const e = await res.json().catch(()=>({})); this.error = e.detail || 'Save failed'; }
+                    this.saving = false;
+                },
+                async remove(srv) {
+                    if (!confirm('Delete MCP server ' + srv.name + '? This revokes all agent access.')) return;
+                    const res = await apiFetch('/api/mcp-servers/' + srv.id, { method:'DELETE' });
+                    if (res.ok) this.load();
+                },
+                async openGrant(srv) {
+                    this.grantServer = srv; this.grantError=''; this.grantSelection=[];
+                    const res = await apiFetch('/api/mcp-servers/' + srv.id + '/agents');
+                    if (res.ok) {
+                        const access = await res.json();
+                        this.grantSelection = access.filter(a=>a.enabled).map(a=>a.agent_id);
+                    }
+                    this.showGrant = true;
+                },
+                async applyGrants() {
+                    this.grantSaving = true; this.grantError = '';
+                    const res = await apiFetch('/api/mcp-servers/' + this.grantServer.id + '/grant', {
+                        method:'POST', headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({ agent_ids: this.grantSelection })
+                    });
+                    if (res.ok) { this.showGrant = false; this.load(); }
+                    else { const e = await res.json().catch(()=>({})); this.grantError = e.detail || 'Failed'; }
+                    this.grantSaving = false;
+                },
+            };
+        }
+    </script>
+</body>
+</html>

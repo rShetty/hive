@@ -654,6 +654,36 @@ async def deploy_hosted_agent(
         db.add(AgentSkill(agent_id=agent.id, skill_id=skill.id, config={}))
     await db.commit()
 
+    # ---- Resolve MCP servers (ad-hoc specs + user registry references) ----
+    from models.mcp import MCPServer, AgentMCPAccess
+    from services.crypto import decrypt_json
+    mcp_final = list(mcp_list)  # ad-hoc specs already collected
+    granted_server_ids = []
+    for sid in (req.mcp_server_ids or []):
+        srow = await db.execute(
+            select(MCPServer).where(
+                MCPServer.id == sid, MCPServer.owner_id == current_user.id
+            )
+        )
+        srv = srow.scalar_one_or_none()
+        if not srv:
+            continue  # skip servers the user doesn't own
+        # Create an explicit per-agent access grant.
+        grant = AgentMCPAccess(
+            agent_id=agent.id, mcp_server_id=srv.id, enabled=True,
+            headers_encrypted=srv.headers_encrypted,
+        )
+        db.add(grant)
+        granted_server_ids.append(srv.id)
+        mcp_final.append({
+            "name": srv.name,
+            "url": srv.url,
+            "description": srv.description,
+            "transport": srv.transport,
+            "headers": decrypt_json(srv.headers_encrypted) or {},
+        })
+    await db.commit()
+
     # Build the runtime env. The user's LLM key (if any) wins; otherwise the
     # server-level key is used as a fallback by the runtime.
     env_vars = {
@@ -670,8 +700,8 @@ async def deploy_hosted_agent(
         _env = _KEY_ENV_MAP.get(_prov.lower())
         if _env and _val:
             env_vars[_env] = _val
-    if mcp_list:
-        env_vars["MCP_SERVERS"] = json.dumps(mcp_list)
+    if mcp_final:
+        env_vars["MCP_SERVERS"] = json.dumps(mcp_final)
 
     container_id = None
     try:

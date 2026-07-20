@@ -58,7 +58,10 @@ async def init_db():
                 col_type = str(column.type)
                 nullability = "" if column.nullable else "NOT NULL"
                 default = ""
-                if column.default is not None:
+                # Only emit a literal DEFAULT for simple scalar defaults; skip
+                # callable defaults (e.g. dict/list factories) which can't be
+                # expressed as a SQL literal.
+                if column.default is not None and not callable(column.default.arg):
                     default = f"DEFAULT {column.default.arg}"
                 dbapi_conn.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type} {nullability} {default}")

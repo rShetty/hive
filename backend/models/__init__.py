@@ -8,6 +8,7 @@ from .wallet import Wallet
 from .transaction import Transaction
 from .agent_review import AgentReview
 from .delegation_log import DelegationLog
+from .mcp import MCPServer, AgentMCPAccess
 
 __all__ = [
     "User",
@@ -19,4 +20,6 @@ __all__ = [
     "Transaction",
     "AgentReview",
     "DelegationLog",
+    "MCPServer",
+    "AgentMCPAccess",
 ]

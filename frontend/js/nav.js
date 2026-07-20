@@ -7,7 +7,7 @@
  *   <script src="/js/nav.js"></script>
  *   <script>renderNav({ active: 'agents' });</script>
  *
- * `active` highlights one of: home | agents | tasks | deploy | settings.
+ * `active` highlights one of: home | agents | skills | mcp | tasks | deploy | settings.
  */
 
 function isHiveAuthed() {
@@ -21,7 +21,7 @@ function hiveLogout() {
 }
 
 function renderNav({ active = '', dark = false } = {}) {
-  const root = document.getElementById('nav-root');
+  const root = document.getElementById('nav-root') || document.getElementById('nav');
   if (!root) return;
 
   const auth = isHiveAuthed();
@@ -33,6 +33,8 @@ function renderNav({ active = '', dark = false } = {}) {
 
   const right = auth
     ? `<div class="nav-links">
+         ${link('/skills', 'Skills', 'skills')}
+         ${link('/mcp', 'MCP', 'mcp')}
          ${link('/tasks', 'Tasks', 'tasks')}
          <a href="/deploy" class="btn btn-green btn-sm">Deploy Agent</a>
          ${link('/settings', 'Settings', 'settings')}

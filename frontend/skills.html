@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Skills Registry — Hive</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="/css/theme.css" rel="stylesheet">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="skillsApp()" x-init="init()">
+    <div id="nav"></div>
+
+    <main class="max-w-5xl mx-auto px-4 py-8">
+        <header class="mb-6">
+            <h1 class="text-2xl font-bold text-gray-900">Skills Registry</h1>
+            <p class="text-gray-500 text-sm mt-1">Browse platform skills and create your own. A skill can be a prompt/instruction spec, a callable tool, or both.</p>
+        </header>
+
+        <div class="flex justify-end mb-4">
+            <button @click="showCreate = true" class="btn btn-accent">+ New Skill</button>
+        </div>
+
+        <!-- Create / Edit modal -->
+        <div x-show="showCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" x-cloak>
+            <div class="card w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto" @click.away="closeModal()">
+                <h2 class="text-lg font-semibold mb-4" x-text="editing ? 'Edit Skill' : 'Create Skill'"></h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="field-label">Name * <span class="text-gray-400 font-normal">(lowercase, digits, underscores)</span></label>
+                        <input type="text" x-model="form.name" placeholder="my_research" class="field" :disabled="editing">
+                    </div>
+                    <div>
+                        <label class="field-label">Display Name *</label>
+                        <input type="text" x-model="form.display_name" placeholder="My Research" class="field">
+                    </div>
+                    <div>
+                        <label class="field-label">Description *</label>
+                        <textarea x-model="form.description" rows="2" class="field"></textarea>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="field-label">Category</label>
+                            <input type="text" x-model="form.category" placeholder="research" class="field">
+                        </div>
+                        <div>
+                            <label class="field-label">Kind</label>
+                            <select x-model="form.kind" class="field">
+                                <option value="prompt">Prompt</option>
+                                <option value="tool">Tool</option>
+                                <option value="both">Both</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div x-show="form.kind !== 'prompt'">
+                        <label class="field-label">Tool endpoint</label>
+                        <input type="url" x-model="form.tool_endpoint" placeholder="https://api.example.com/run" class="field">
+                    </div>
+                    <div x-show="form.kind !== 'tool'">
+                        <label class="field-label">Instructions</label>
+                        <textarea x-model="form.instructions" rows="3" placeholder="What the agent should do when this skill is used…" class="field"></textarea>
+                    </div>
+                    <div>
+                        <label class="field-label">Required env vars <span class="text-gray-400 font-normal">(comma-separated)</span></label>
+                        <input type="text" x-model="form.required_env_vars" placeholder="GITHUB_TOKEN" class="field">
+                    </div>
+                </div>
+                <div x-show="error" class="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm" x-text="error"></div>
+                <div class="mt-6 flex justify-end gap-2">
+                    <button @click="closeModal()" class="btn btn-ghost">Cancel</button>
+                    <button @click="save()" :disabled="saving" class="btn btn-green" x-text="editing ? 'Save' : 'Create'"></button>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <template x-for="skill in skills" :key="skill.id">
+                <div class="card p-5">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h3 class="font-semibold text-gray-900" x-text="skill.display_name"></h3>
+                                <span class="badge" x-text="skill.source === 'user' ? 'yours' : skill.tier"></span>
+                            </div>
+                            <p class="text-xs text-gray-400 font-mono mt-0.5" x-text="skill.name"></p>
+                        </div>
+                        <template x-if="skill.source === 'user'">
+                            <div class="flex gap-1">
+                                <button @click="editSkill(skill)" class="btn btn-soft btn-sm">Edit</button>
+                                <button @click="remove(skill)" class="btn btn-ghost btn-sm">✕</button>
+                            </div>
+                        </template>
+                    </div>
+                    <p class="text-sm text-gray-600 mt-2" x-text="skill.description"></p>
+                    <div class="flex flex-wrap gap-1 mt-3" x-show="skill.definition && skill.definition.kind">
+                        <span class="badge badge-purple" x-text="skill.definition.kind"></span>
+                        <template x-for="ev in (skill.required_env_vars || [])">
+                            <span class="badge" x-text="ev"></span>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </div>
+        <p x-show="!skills.length" class="text-gray-400 text-center py-12">No skills yet.</p>
+    </main>
+
+    <script src="js/app.js"></script>
+    <script>
+        function skillsApp() {
+            return {
+                skills: [],
+                showCreate: false,
+                editing: false,
+                saving: false,
+                error: '',
+                form: { name:'', display_name:'', description:'', category:'general', kind:'prompt', tool_endpoint:'', instructions:'', required_env_vars:'' },
+                init() { renderNav({active: 'skills'}); this.load(); },
+                async load() {
+                    const res = await apiFetch('/api/skills');
+                    if (res.ok) this.skills = await res.json();
+                },
+                reset() {
+                    this.form = { name:'', display_name:'', description:'', category:'general', kind:'prompt', tool_endpoint:'', instructions:'', required_env_vars:'' };
+                    this.editing = false; this.error = '';
+                },
+                closeModal() { this.showCreate = false; this.reset(); },
+                editSkill(skill) {
+                    this.editing = true;
+                    this._currentId = skill.id;
+                    const d = skill.definition || {};
+                    this.form = {
+                        name: skill.name,
+                        display_name: skill.display_name,
+                        description: skill.description,
+                        category: skill.category,
+                        kind: d.kind || 'prompt',
+                        tool_endpoint: d.tool?.endpoint || '',
+                        instructions: d.instructions || '',
+                        required_env_vars: (skill.required_env_vars || []).join(','),
+                    };
+                    this.showCreate = true;
+                },
+                async save() {
+                    this.saving = true; this.error = '';
+                    const def = { kind: this.form.kind };
+                    if (this.form.kind !== 'tool') def.instructions = this.form.instructions;
+                    if (this.form.kind !== 'prompt') def.tool = { endpoint: this.form.tool_endpoint, method: 'POST', params_schema: {} };
+                    const body = {
+                        name: this.form.name,
+                        display_name: this.form.display_name,
+                        description: this.form.description,
+                        category: this.form.category,
+                        definition: def,
+                        required_env_vars: this.form.required_env_vars.split(',').map(s=>s.trim()).filter(Boolean),
+                    };
+                    let res;
+                    if (this.editing) res = await apiFetch('/api/skills/' + this.currentId, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+                    else res = await apiFetch('/api/skills', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+                    if (res.ok) { this.closeModal(); this.load(); }
+                    else { const e = await res.json().catch(()=>({})); this.error = e.detail || 'Save failed'; }
+                    this.saving = false;
+                },
+                async remove(skill) {
+                    if (!confirm('Delete skill ' + skill.name + '?')) return;
+                    const res = await apiFetch('/api/skills/' + skill.id, { method:'DELETE' });
+                    if (res.ok) this.load();
+                },
+                get currentId() { return this._currentId; },
+            };
+        }
+    </script>
+</body>
+</html>

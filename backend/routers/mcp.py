@@ -21,6 +21,29 @@ from auth import get_current_active_user
 router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-servers"])
 
 
+def _is_admin(user: User) -> bool:
+    return bool(getattr(user, "is_admin", False))
+
+
+async def _user_has_grant(db, user_id: str, server_id: str) -> bool:
+    """Whether the user has at least one of their agents granted this server."""
+    row = (await db.execute(
+        select(AgentMCPAccess)
+        .join(Agent, Agent.id == AgentMCPAccess.agent_id)
+        .where(
+            AgentMCPAccess.mcp_server_id == server_id,
+            Agent.owner_id == user_id,
+            AgentMCPAccess.enabled.is_(True),
+        )
+    )).scalar_one_or_none()
+    return row is not None
+
+
+def _accessible_server(server: MCPServer, user: User) -> bool:
+    """A server is accessible to a user if they own it or it's a platform catalog server."""
+    return server.owner_id == user.id or server.visibility == "platform"
+
+
 def _validate_url(url: str):
     from urllib.parse import urlparse
     p = urlparse(url)
@@ -55,9 +78,16 @@ async def list_mcp_servers(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """List the caller's MCP servers with their granted-agent counts."""
+    """List the caller's MCP servers plus any platform catalog servers.
+
+    ``is_catalog`` marks admin-published servers; ``granted`` marks whether the
+    caller already has an agent connected to it.
+    """
     result = await db.execute(
-        select(MCPServer).where(MCPServer.owner_id == current_user.id)
+        select(MCPServer).where(
+            (MCPServer.owner_id == current_user.id)
+            | (MCPServer.visibility == "platform")
+        )
     )
     servers = result.scalars().all()
     out = []
@@ -67,7 +97,10 @@ async def list_mcp_servers(
                 AgentMCPAccess.mcp_server_id == s.id
             )
         )).scalar() or 0
-        out.append(_to_response(s, agent_count=cnt))
+        resp = _to_response(s, agent_count=cnt)
+        resp.is_catalog = s.visibility == "platform"
+        resp.granted = await _user_has_grant(db, current_user.id, s.id)
+        out.append(resp)
     return out
 
 
@@ -79,6 +112,15 @@ async def create_mcp_server(
 ):
     if data.transport != "stdio":
         _validate_url(data.url)
+    # Only admins may publish a server to the platform catalog.
+    visibility = "private"
+    if data.visibility == "platform":
+        if not _is_admin(current_user):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Only admins can publish MCP servers to the platform catalog",
+            )
+        visibility = "platform"
     headers_enc = encrypt_json(data.headers) if data.headers else None
     env_enc = encrypt_json(data.env) if data.env else None
     server = MCPServer(
@@ -94,7 +136,7 @@ async def create_mcp_server(
         oauth_client_id=data.oauth_client_id,
         oauth_client_secret=data.oauth_client_secret,
         oauth_scopes=data.oauth_scopes,
-        visibility="private",
+        visibility=visibility,
     )
     db.add(server)
     await db.commit()
@@ -108,7 +150,7 @@ async def get_mcp_server(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    server = await _get_owned_server(db, server_id, current_user)
+    server = await _get_accessible_server(db, server_id, current_user)
     return _to_response(server)
 
 
@@ -119,7 +161,17 @@ async def update_mcp_server(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    server = await _get_owned_server(db, server_id, current_user)
+    server = await _get_accessible_server(db, server_id, current_user)
+    # Visibility changes (publish/unpublish to catalog) are admin-only.
+    if data.visibility is not None and data.visibility != server.visibility:
+        if not _is_admin(current_user):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Only admins can change an MCP server's catalog visibility",
+            )
+        if data.visibility not in ("private", "platform"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "visibility must be 'private' or 'platform'")
+        server.visibility = data.visibility
     if data.url is not None:
         _validate_url(data.url)
         server.url = data.url
@@ -166,7 +218,7 @@ async def list_server_access(
     current_user: User = Depends(get_current_active_user),
 ):
     """List which agents have access to this MCP server."""
-    await _get_owned_server(db, server_id, current_user)
+    await _get_accessible_server(db, server_id, current_user)
     return await _access_rows(db, mcp_server_id=server_id)
 
 
@@ -177,8 +229,12 @@ async def grant_access(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Grant one or more of the caller's agents access to this MCP server."""
-    server = await _get_owned_server(db, server_id, current_user)
+    """Grant one or more of the caller's agents access to this MCP server.
+
+    Works for servers the caller owns and for platform catalog servers
+    published by an admin (the admin's shared credentials are used).
+    """
+    server = await _get_accessible_server(db, server_id, current_user)
 
     created = []
     for agent_id in data.agent_ids:
@@ -216,7 +272,7 @@ async def revoke_access(
     current_user: User = Depends(get_current_active_user),
 ):
     """Revoke access for the given agents (disables grants)."""
-    await _get_owned_server(db, server_id, current_user)
+    await _get_accessible_server(db, server_id, current_user)
     for agent_id in data.agent_ids:
         await _get_owned_agent(db, agent_id, current_user)
         existing = (await db.execute(
@@ -250,6 +306,17 @@ async def _get_owned_server(db, server_id, user) -> MCPServer:
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
     if server.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Not your MCP server")
+    return server
+
+
+async def _get_accessible_server(db, server_id, user) -> MCPServer:
+    """Like _get_owned_server but also allows platform catalog servers."""
+    result = await db.execute(select(MCPServer).where(MCPServer.id == server_id))
+    server = result.scalar_one_or_none()
+    if not server:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    if server.owner_id != user.id and server.visibility != "platform":
         raise HTTPException(status_code=403, detail="Not your MCP server")
     return server
 

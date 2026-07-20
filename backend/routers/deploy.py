@@ -696,13 +696,16 @@ async def deploy_hosted_agent(
     for sid in (req.mcp_server_ids or []):
         srow = await db.execute(
             select(MCPServer).where(
-                MCPServer.id == sid, MCPServer.owner_id == current_user.id
+                (MCPServer.id == sid)
+                & ((MCPServer.owner_id == current_user.id) | (MCPServer.visibility == "platform"))
             )
         )
         srv = srow.scalar_one_or_none()
         if not srv:
-            continue  # skip servers the user doesn't own
-        # Create an explicit per-agent access grant.
+            continue  # skip servers the user can't access
+        # Create an explicit per-agent access grant. For platform catalog
+        # servers the admin's shared credentials (stored on the server row)
+        # are used; for owned servers the user's own configured credentials.
         grant = AgentMCPAccess(
             agent_id=agent.id, mcp_server_id=srv.id, enabled=True,
             headers_encrypted=srv.headers_encrypted,

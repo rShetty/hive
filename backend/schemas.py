@@ -30,6 +30,7 @@ class UserCreate(UserBase):
 class UserResponse(UserBase):
     id: str
     is_active: bool
+    is_admin: bool = False
     created_at: datetime
     
     class Config:
@@ -232,6 +233,9 @@ class MCPServerCreate(HiveBaseModel):
     oauth_client_id: Optional[str] = None
     oauth_client_secret: Optional[str] = None
     oauth_scopes: Optional[str] = None
+    # "private" (default) or "platform" (admin-published catalog). Non-admins
+    # cannot set "platform"; the server enforces this.
+    visibility: Optional[str] = "private"
 
     @model_validator(mode="after")
     def _check_transport(self):
@@ -239,6 +243,8 @@ class MCPServerCreate(HiveBaseModel):
             raise ValueError("transport must be 'http', 'sse', or 'stdio'")
         if self.auth_type not in ("headers", "oauth"):
             raise ValueError("auth_type must be 'headers' or 'oauth'")
+        if self.visibility not in (None, "private", "platform"):
+            raise ValueError("visibility must be 'private' or 'platform'")
         if self.transport == "stdio":
             if not self.command:
                 raise ValueError("stdio transport requires a 'command'")
@@ -260,6 +266,7 @@ class MCPServerUpdate(HiveBaseModel):
     oauth_client_id: Optional[str] = None
     oauth_client_secret: Optional[str] = None
     oauth_scopes: Optional[str] = None
+    visibility: Optional[str] = None
 
 
 class MCPServerResponse(HiveBaseModel):
@@ -278,6 +285,10 @@ class MCPServerResponse(HiveBaseModel):
     created_at: Optional[datetime] = None
     # Number of agents currently granted access (populated by the API)
     agent_count: Optional[int] = None
+    # True if this is an admin-published platform catalog server.
+    is_catalog: bool = False
+    # True if the current user already has an agent granted this server.
+    granted: bool = False
 
 
 class AgentMCPGrantRequest(HiveBaseModel):

@@ -52,6 +52,16 @@
                             </select>
                         </div>
                     </div>
+                    <div x-show="isAdmin" class="mt-3">
+                        <label class="field-label">Visibility</label>
+                        <select x-model="form.visibility" class="field">
+                            <option value="private">Private</option>
+                            <option value="platform">Platform catalog (visible to all users)</option>
+                        </select>
+                        <p x-show="form.visibility === 'platform'" class="text-xs text-amber-600 mt-1">
+                            This server will be visible to all users. They can grant it to their agents.
+                        </p>
+                    </div>
                     <div x-show="form.transport !== 'stdio'">
                         <label class="field-label">URL * <span class="text-gray-400 font-normal">(http/https)</span></label>
                         <input type="url" x-model="form.url" placeholder="https://mcp.example.com" class="field">
@@ -123,15 +133,18 @@
                             <p class="text-xs text-gray-400 font-mono mt-0.5 truncate" x-text="srv.url"></p>
                         </div>
                         <div class="flex gap-1">
-                            <button @click="openGrant(srv)" class="btn btn-soft btn-sm">Access</button>
-                            <button x-show="srv.auth_type === 'oauth' && !srv.oauth_connected" @click="connect(srv)" class="btn btn-accent btn-sm">Connect</button>
-                            <button @click="editServer(srv)" class="btn btn-ghost btn-sm">✎</button>
-                            <button @click="remove(srv)" class="btn btn-ghost btn-sm">✕</button>
+                            <button x-show="srv.is_catalog && !srv.granted" @click="openGrant(srv)" class="btn btn-green btn-sm">Add to agent</button>
+                            <button x-show="srv.is_catalog && srv.granted" @click="openGrant(srv)" class="btn btn-soft btn-sm">Manage</button>
+                            <button x-show="!srv.is_catalog" @click="openGrant(srv)" class="btn btn-soft btn-sm">Access</button>
+                            <button x-show="!srv.is_catalog && srv.auth_type === 'oauth' && !srv.oauth_connected" @click="connect(srv)" class="btn btn-accent btn-sm">Connect</button>
+                            <button x-show="!srv.is_catalog" @click="editServer(srv)" class="btn btn-ghost btn-sm">✎</button>
+                            <button x-show="!srv.is_catalog" @click="remove(srv)" class="btn btn-ghost btn-sm">✕</button>
                         </div>
                     </div>
                     <p class="text-sm text-gray-600 mt-2" x-text="srv.description || 'No description'"></p>
                     <div class="mt-3 flex items-center gap-2 text-xs text-gray-500">
                         <span class="badge" x-text="srv.transport"></span>
+                        <span x-show="srv.is_catalog" class="badge badge-active">Catalog</span>
                         <span x-show="srv.auth_type === 'oauth'" class="badge" :class="srv.oauth_connected ? 'badge-active' : 'badge-pending'" x-text="srv.oauth_connected ? 'OAuth ✓' : 'OAuth'"></span>
                         <span x-text="(srv.agent_count || 0) + ' agent(s) with access'"></span>
                     </div>
@@ -145,11 +158,15 @@
     <script>
         function mcpApp() {
             return {
-                servers: [], agents: [],
+                servers: [], agents: [], isAdmin: false,
                 showModal: false, showGrant: false, editing: false, saving: false,
                 error: '', grantError: '', grantSaving: false, grantServer: null, grantSelection: [],
-                form: { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'', oauth_client_id:'', oauth_client_secret:'', oauth_scopes:'' },
-                init() { this.load(); this.loadAgents(); },
+                form: { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'', oauth_client_id:'', oauth_client_secret:'', oauth_scopes:'', visibility:'private' },
+                init() { this.load(); this.loadAgents(); this.loadMe(); },
+                async loadMe() {
+                    const res = await apiFetch('/api/auth/me');
+                    if (res.ok) { const u = await res.json(); this.isAdmin = !!u.is_admin; }
+                },
                 async load() {
                     const res = await apiFetch('/api/mcp-servers');
                     if (res.ok) this.servers = await res.json();
@@ -158,8 +175,8 @@
                     const res = await apiFetch('/api/agents');
                     if (res.ok) this.agents = await res.json();
                 },
-                openCreate() { this.editing = false; this.error = ''; this.form = { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'', oauth_client_id:'', oauth_client_secret:'', oauth_scopes:'' }; this.showModal = true; },
-                editServer(srv) { this.editing = true; this._id = srv.id; this.error=''; this.form = { name: srv.name, url: srv.url||'', description: srv.description||'', headers:'', transport: srv.transport||'http', auth_type: srv.auth_type||'headers', command: srv.command||'', env:'', oauth_client_id: srv.oauth_client_id||'', oauth_client_secret:'', oauth_scopes: srv.oauth_scopes||'' }; this.showModal = true; },
+                openCreate() { this.editing = false; this.error = ''; this.form = { name:'', url:'', description:'', headers:'', transport:'http', auth_type:'headers', command:'', env:'', oauth_client_id:'', oauth_client_secret:'', oauth_scopes:'', visibility:'private' }; this.showModal = true; },
+                editServer(srv) { this.editing = true; this._id = srv.id; this.error=''; this.form = { name: srv.name, url: srv.url||'', description: srv.description||'', headers:'', transport: srv.transport||'http', auth_type: srv.auth_type||'headers', command: srv.command||'', env:'', oauth_client_id: srv.oauth_client_id||'', oauth_client_secret:'', oauth_scopes: srv.oauth_scopes||'', visibility: srv.visibility||'private' }; this.showModal = true; },
                 closeModal() { this.showModal = false; this.editing = false; },
                 async save() {
                     this.saving = true; this.error = '';
@@ -173,7 +190,7 @@
                     if (this.form.env.trim()) {
                         try { env = JSON.parse(this.form.env); } catch(e) { this.error = 'Env must be valid JSON'; this.saving=false; return; }
                     }
-                    const body = { name: this.form.name, url: this.form.url, description: this.form.description, headers, transport: this.form.transport, auth_type: this.form.auth_type, command: this.form.command, env, oauth_client_id: this.form.oauth_client_id || undefined, oauth_client_secret: this.form.oauth_client_secret || undefined, oauth_scopes: this.form.oauth_scopes || undefined };
+                    const body = { name: this.form.name, url: this.form.url, description: this.form.description, headers, transport: this.form.transport, auth_type: this.form.auth_type, command: this.form.command, env, oauth_client_id: this.form.oauth_client_id || undefined, oauth_client_secret: this.form.oauth_client_secret || undefined, oauth_scopes: this.form.oauth_scopes || undefined, visibility: this.form.visibility || 'private' };
                     let res;
                     if (this.editing) res = await apiFetch('/api/mcp-servers/' + this._id, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
                     else res = await apiFetch('/api/mcp-servers', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });

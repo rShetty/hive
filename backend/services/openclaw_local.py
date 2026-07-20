@@ -138,6 +138,91 @@ def spawn_openclaw_agent(
     return f"proc-openclaw-{agent_id[:8]}"
 
 
+async def rehydrate_local_agents(db) -> int:
+    """Re-spawn managed agents that were deployed as local subprocesses.
+
+    These agents live as children of the Hive process, so they die whenever
+    Hive restarts. On startup we bring them back using their persisted
+    (encrypted) config + skill list, generating a fresh API key.
+
+    Returns the number of agents rehydrated.
+    """
+    from sqlalchemy import select
+    from models.agent import Agent, AgentStatus, AgentSkill
+    from models.skill import Skill
+    from services.crypto import decrypt_json
+    from auth import get_password_hash
+    import secrets as _secrets
+
+    _KEY_ENV_MAP = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "google": "GOOGLE_API_KEY",
+        "cohere": "COHERE_API_KEY",
+    }
+
+    result = await db.execute(
+        select(Agent).where(Agent.container_id.like("proc-openclaw-%"))
+    )
+    agents = result.scalars().all()
+    count = 0
+    for agent in agents:
+        # Skip agents already running (a live process exists).
+        with _RUNNERS_LOCK:
+            existing = _RUNNERS.get(agent.id)
+        if existing is not None and existing.poll() is None:
+            continue
+
+        cfg = decrypt_json(agent.config_encrypted) or {}
+        model_key = cfg.get("model_key") or {}
+        # Resolve skill names from the join table.
+        skill_rows = (await db.execute(
+            select(Skill.name).join(
+                AgentSkill, AgentSkill.skill_id == Skill.id
+            ).where(AgentSkill.agent_id == agent.id)
+        )).scalars().all()
+        skills = list(skill_rows) or [s.get("name") for s in (cfg.get("mcp_servers") or [])]
+
+        env_vars = {"SKILLS": ",".join([s for s in skills if s])}
+        for prov, val in model_key.items():
+            env = _KEY_ENV_MAP.get(str(prov).lower())
+            if env and val:
+                env_vars[env] = str(val)
+
+        # Fresh API key (plaintext is not persisted; only the hash).
+        api_key = f"am-{_secrets.token_urlsafe(32)}"
+        agent.api_key_hash = get_password_hash(api_key)
+        agent.api_key_prefix = api_key[:16]
+
+        port = agent.internal_port or 0
+        try:
+            container_id = spawn_openclaw_agent(
+                agent_id=agent.id,
+                agent_name=agent.name,
+                port=port,
+                api_key=api_key,
+                skills=[s for s in skills if s],
+                env_vars=env_vars,
+            )
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).error(
+                "Rehydrate failed for agent %s: %s", agent.id, e
+            )
+            agent.status = AgentStatus.ERROR.value
+            await db.commit()
+            continue
+
+        agent.container_id = container_id
+        agent.status = AgentStatus.ACTIVE.value
+        await db.commit()
+        count += 1
+        import logging
+        logging.getLogger(__name__).info("Rehydrated local agent %s", agent.id)
+    return count
+
+
 def stop_openclaw_agent(agent_id: str) -> bool:
     """Terminate the locally-running OpenClaw agent for ``agent_id``."""
     with _RUNNERS_LOCK:

@@ -36,7 +36,18 @@ async def lifespan(app: FastAPI):
     from database import async_session_maker
     async with async_session_maker() as session:
         await seed_skills(session)
-    
+
+    # Re-spawn managed agents that run as local subprocesses (they die when
+    # Hive restarts and must be brought back using their persisted config).
+    try:
+        from services.openclaw_local import rehydrate_local_agents
+        async with async_session_maker() as session:
+            n = await rehydrate_local_agents(session)
+            if n:
+                print(f"🔄 Rehydrated {n} local agent(s)")
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  Agent rehydrate skipped: {e}")
+
     print("🚀 Agent Marketplace started!")
     yield
     # Shutdown

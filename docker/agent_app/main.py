@@ -36,23 +36,12 @@ _start_time = datetime.utcnow()
 MCP_MANAGER: Optional[MCPManager] = None
 
 
-def _init_mcp():
-    """Build and connect the MCP manager from the MCP_SERVERS env (sync best-effort)."""
+def _build_mcp():
+    """Build the MCP manager from the MCP_SERVERS env (no connection yet)."""
     global MCP_MANAGER
     if not MCP_SERVERS:
         return
-    mgr = MCPManager(MCP_SERVERS)
-    try:
-        asyncio.get_event_loop().run_until_complete(mgr.connect_all())
-    except RuntimeError:
-        # No running loop yet (still importing) — connect in the startup hook.
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(mgr.connect_all())
-        loop.close()
-    MCP_MANAGER = mgr
-    for st in mgr.status:
-        _log_activity("mcp", f"MCP {st['name']}: {'connected' if st['connected'] else 'failed'} "
-                              f"({st['tools']} tools)" + (f" — {st['error']}" if st['error'] else ""))
+    MCP_MANAGER = MCPManager(MCP_SERVERS)
 
 
 def _log_activity(kind: str, summary: str, detail: Any = None):
@@ -750,7 +739,12 @@ async def _send_heartbeat():
 async def startup_event():
     _log_activity("start", f"Agent {AGENT_NAME} started")
     try:
-        _init_mcp()
+        _build_mcp()
+        if MCP_MANAGER is not None:
+            await MCP_MANAGER.connect_all()
+            for st in MCP_MANAGER.status:
+                _log_activity("mcp", f"MCP {st['name']}: {'connected' if st['connected'] else 'failed'} "
+                                      f"({st['tools']} tools)" + (f" — {st['error']}" if st['error'] else ""))
     except Exception as e:
         _log_activity("error", f"MCP init failed: {e}")
     if HIVE_URL and HIVE_API_KEY:

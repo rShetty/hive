@@ -11,11 +11,11 @@ from models.agent import Agent, AgentStatus
 from models.skill import Skill
 from models.agent_skill import AgentSkill
 from models.user import User
-from schemas import AgentResponse, AgentCreate
+from schemas import AgentResponse, AgentCreate, HostedAgentRequest, HostedAgentResponse
 from auth import get_current_active_user
 from services.container_manager import create_container, delete_container, get_container_logs
 from services.health_checker import perform_endpoint_challenge
-from services.skill_catalog import validate_skill_selection
+from services.skill_catalog import validate_skill_selection, get_skill_by_name
 from cryptography.fernet import Fernet
 import os
 import json
@@ -317,19 +317,35 @@ OPENCLAW_PORT_START = int(os.getenv("OPENCLAW_PORT_START", "9000"))
 HIVE_URL = os.getenv("HIVE_URL", "http://localhost:8080")
 
 
+def _port_is_free(port: int) -> bool:
+    """True if nothing is currently listening on 127.0.0.1:<port>."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.25)
+        return sock.connect_ex(("127.0.0.1", port)) != 0
+
+
 async def _get_next_available_port(db: AsyncSession) -> int:
-    """Get the next available port for OpenClaw instances."""
+    """Get the next port that is both unused in the DB and free on the host.
+
+    Considers every agent with an assigned ``internal_port`` (openclaw AND
+    managed/hosted), then probes the host to ensure the port is not already
+    bound by a live runtime. This prevents two agents colliding on the same
+    port when an earlier agent's process died without freeing its port.
+    """
     result = await db.execute(
         select(Agent.internal_port)
-        .where(Agent.agent_type == "openclaw")
         .where(Agent.internal_port.isnot(None))
-        .order_by(Agent.internal_port.desc())
-        .limit(1)
     )
-    last_port = result.scalar_one_or_none()
-    if last_port is None:
-        return OPENCLAW_PORT_START
-    return last_port + 1
+    used = {row[0] for row in result.fetchall() if row[0] is not None}
+
+    candidate = OPENCLAW_PORT_START
+    while candidate < OPENCLAW_PORT_START + 2000:
+        if candidate in used or not _port_is_free(candidate):
+            candidate += 1
+            continue
+        return candidate
+    raise RuntimeError("No available ports in range for agent deployment")
 
 
 class OpenClawDeployRequest(HiveBaseModel):
@@ -382,7 +398,7 @@ async def deploy_openclaw_agent(
     all_skill_names = list(dict.fromkeys(
         OPENCLAW_DEFAULT_SKILL_NAMES + req.extra_skill_names
     ))
-    resolved_skills = await _resolve_skill_names(db, all_skill_names)
+    resolved_skills = await _resolve_skill_names(db, None, all_skill_names)
 
     agent = Agent(
         name=req.agent_name,
@@ -406,25 +422,97 @@ async def deploy_openclaw_agent(
         db.add(AgentSkill(agent_id=agent.id, skill_id=skill.id, config={}))
     await db.commit()
 
-    compose = generate_compose(
-        instance_id=instance_id,
-        agent_name=req.agent_name,
-        agent_id=agent.id,
-        api_key=api_key,
-        port=port,
-        extra_env=req.extra_env,
-    )
+    # -----------------------------------------------------------------
+    # Decide deployment mode:
+    #   OPENCLAW_DEPLOY_MODE=local  → always local Docker daemon
+    #   OPENCLAW_DEPLOY_MODE=vps     → always remote VPS (requires VPS env)
+    #   OPENCLAW_DEPLOY_MODE=auto (default) → VPS if configured, else local
+    # -----------------------------------------------------------------
+    deploy_mode = os.getenv("OPENCLAW_DEPLOY_MODE", "auto").lower()
+    vps_configured = bool(OPENCLAW_VPS_HOST and OPENCLAW_VPS_SSH_KEY_PATH)
+    if deploy_mode == "local":
+        use_remote_vps = False
+    elif deploy_mode == "vps":
+        use_remote_vps = True
+    else:  # auto
+        use_remote_vps = vps_configured
 
-    result = await deploy_to_vps(
-        vps_host=OPENCLAW_VPS_HOST,
-        ssh_key_path=OPENCLAW_VPS_SSH_KEY_PATH,
-        compose_content=compose,
-        instance_id=instance_id,
-        port=port,
-        ssh_user=OPENCLAW_VPS_SSH_USER,
-        ssh_port=OPENCLAW_VPS_SSH_PORT,
-        agent_slug=slug,
-    )
+    if use_remote_vps:
+        compose = generate_compose(
+            instance_id=instance_id,
+            agent_name=req.agent_name,
+            agent_id=agent.id,
+            api_key=api_key,
+            port=port,
+            extra_env=req.extra_env,
+        )
+
+        result = await deploy_to_vps(
+            vps_host=OPENCLAW_VPS_HOST,
+            ssh_key_path=OPENCLAW_VPS_SSH_KEY_PATH,
+            compose_content=compose,
+            instance_id=instance_id,
+            port=port,
+            ssh_user=OPENCLAW_VPS_SSH_USER,
+            ssh_port=OPENCLAW_VPS_SSH_PORT,
+            agent_slug=slug,
+        )
+    else:
+        # Local single-host deploy — uses the Docker socket already mounted
+        from services.container_manager import create_openclaw_container
+        try:
+            env_vars = dict(req.extra_env or {})
+            # Forward the resolved skill names so the running agent knows its skills.
+            env_vars["SKILLS"] = ",".join([s.name for s in resolved_skills])
+
+            # Inject the owner's saved model API keys so the agent can make
+            # real LLM calls. Map provider names → the env vars the OpenClaw
+            # agent honours (OPENROUTER_API_KEY, OPENAI_API_KEY, ...).
+            _KEY_ENV_MAP = {
+                "openrouter": "OPENROUTER_API_KEY",
+                "openai": "OPENAI_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "google": "GOOGLE_API_KEY",
+                "cohere": "COHERE_API_KEY",
+            }
+            _user_keys = decrypt_api_keys(current_user.model_api_keys_encrypted or "")
+            for _prov, _val in _user_keys.items():
+                _env = _KEY_ENV_MAP.get(_prov.lower())
+                if _env and _val:
+                    env_vars[_env] = _val
+            # Let an explicit server-side model selection win when the user
+            # has not pinned a model themselves.
+            if os.getenv("OPENROUTER_MODEL") and _user_keys.get("openrouter"):
+                env_vars.setdefault("OPENROUTER_MODEL", os.getenv("OPENROUTER_MODEL"))
+            container_id, assigned_port = create_openclaw_container(
+                agent_id=agent.id,
+                agent_name=req.agent_name,
+                env_vars=env_vars,
+                api_key=api_key,
+                slug=slug,
+                hive_domain=os.getenv("HIVE_DOMAIN", ""),
+            )
+        except Exception as e:
+            result = {"success": False, "message": str(e)}
+        else:
+            agent.container_id = container_id
+            agent.internal_port = assigned_port
+            # Build URL: prefer subdomain if domain is set, else direct IP:port
+            hive_domain = os.getenv("HIVE_DOMAIN", "")
+            if hive_domain:
+                dashboard_url = f"https://{slug}.{hive_domain}"
+            else:
+                # Fallback to host IP + assigned port
+                host_ip = os.getenv("HOST_IP", "127.0.0.1")
+                dashboard_url = f"http://{host_ip}:{assigned_port}"
+
+            result = {
+                "success": True,
+                "message": "OpenClaw deployed locally via Docker daemon",
+                "url": dashboard_url,
+                "dashboard_url": dashboard_url,
+                "remote_dir": None,
+            }
 
     if result["success"]:
         agent.status = AgentStatus.ACTIVE.value
@@ -479,6 +567,150 @@ Your capabilities: {', '.join([s.name for s in resolved_skills])}"""
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=result["message"],
         )
+
+
+async def _resolve_skill_names(db, skill_ids, skill_names):
+    """Return Skill rows resolved by id or by machine name."""
+    from models.skill import Skill
+    names = []
+    if skill_ids:
+        res = await db.execute(select(Skill).where(Skill.id.in_(skill_ids)))
+        names += list(res.scalars().all())
+    for nm in (skill_names or []):
+        skill = await get_skill_by_name(db, nm)
+        if skill and skill.id not in {s.id for s in names}:
+            names.append(skill)
+    return names
+
+
+@router.post("/agents/deploy-hosted", response_model=HostedAgentResponse)
+async def deploy_hosted_agent(
+    req: HostedAgentRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Bring-Your-Own-Key hosted agent.
+
+    The platform hosts the agent runtime — no endpoint_url is required. The
+    user supplies an LLM key (+ optional MCP servers) and picks the tools
+    (skills) the agent should have. Hive spins up a running OpenClaw agent
+    that accepts requests at the platform-assigned endpoint and exposes a
+    chat UI + dashboard at /a/{slug}/.
+    """
+    from models.agent import AgentType
+    from auth import get_password_hash as _hash
+    import secrets as _secrets
+    import uuid as _uuid
+
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=400, detail="Agent name is required")
+
+    # Need at least one tool (skill) so the agent can do real work.
+    resolved_skills = await _resolve_skill_names(db, req.skill_ids, req.skill_names)
+    if not resolved_skills:
+        raise HTTPException(
+            status_code=400,
+            detail="Select at least one tool (skill) for your agent.",
+        )
+
+    api_key = f"am-{_secrets.token_urlsafe(32)}"
+    api_key_hash = _hash(api_key)
+    slug = Agent.generate_slug(req.name)
+    port = await _get_next_available_port(db)
+
+    agent = Agent(
+        name=req.name,
+        description=req.description or f"Hosted {req.framework} agent on Hive.",
+        slug=slug,
+        agent_type=AgentType.MANAGED.value,
+        capabilities=(req.capabilities or []) + [req.framework],
+        tags=req.tags or ["hosted", req.framework],
+        owner_id=current_user.id,
+        api_key_prefix=api_key[:16],
+        api_key_hash=api_key_hash,
+        status=AgentStatus.VERIFYING.value,
+        version="1.0.0",
+        internal_port=port,
+        endpoint_url=f"/agents/{'PLACEHOLDER'}",  # fixed after we know the id
+    )
+    db.add(agent)
+    await db.commit()
+    await db.refresh(agent)
+
+    agent.endpoint_url = f"/agents/{agent.id}/invoke"
+    await db.commit()
+
+    # Persist config (LLM key + MCP servers + framework) encrypted.
+    mcp_list = [s.model_dump() for s in req.mcp_servers]
+    agent.config_encrypted = fernet.encrypt(json.dumps({
+        "framework": req.framework,
+        "model_key": req.model_key,
+        "mcp_servers": mcp_list,
+    }).encode()).decode()
+
+    # Attach selected tools.
+    for skill in resolved_skills:
+        db.add(AgentSkill(agent_id=agent.id, skill_id=skill.id, config={}))
+    await db.commit()
+
+    # Build the runtime env. The user's LLM key (if any) wins; otherwise the
+    # server-level key is used as a fallback by the runtime.
+    env_vars = {
+        "SKILLS": ",".join([s.name for s in resolved_skills]),
+    }
+    _KEY_ENV_MAP = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "google": "GOOGLE_API_KEY",
+        "cohere": "COHERE_API_KEY",
+    }
+    for _prov, _val in (req.model_key or {}).items():
+        _env = _KEY_ENV_MAP.get(_prov.lower())
+        if _env and _val:
+            env_vars[_env] = _val
+    if mcp_list:
+        env_vars["MCP_SERVERS"] = json.dumps(mcp_list)
+
+    container_id = None
+    try:
+        from services.openclaw_local import spawn_openclaw_agent
+        container_id = spawn_openclaw_agent(
+            agent_id=agent.id,
+            agent_name=req.name,
+            port=port,
+            api_key=api_key,
+            skills=[s.name for s in resolved_skills],
+            env_vars=env_vars,
+        )
+        agent.container_id = container_id
+        agent.status = AgentStatus.ACTIVE.value
+        await db.commit()
+        # Start the endpoint challenge so the agent is reachable via the proxy.
+        import asyncio
+        asyncio.create_task(_run_endpoint_challenge(agent.id))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("Hosted agent spawn failed for %s: %s", agent.id, e)
+        agent.status = AgentStatus.ERROR.value
+        agent.container_id = None
+        await db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start agent runtime: {e}",
+        )
+
+    dashboard_url = f"/a/{slug}/"
+    return {
+        "agent_id": agent.id,
+        "slug": slug,
+        "api_key": api_key,
+        "url": dashboard_url,
+        "dashboard_url": dashboard_url,
+        "endpoint_url": agent.endpoint_url,
+        "status": agent.status,
+    }
 
 
 @router.patch("/me/keys")

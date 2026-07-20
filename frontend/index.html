@@ -3,85 +3,51 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hive 🐝 - Agent Swarm</title>
+    <title>Hive 🐝 — Agent Swarm</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-    </style>
+    <link rel="stylesheet" href="/css/theme.css">
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="app()">
-    <!-- Navigation -->
-    <nav class="bg-white shadow-sm border-b">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex items-center">
-                    <a href="/" class="flex items-center space-x-2">
-                        <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                            <span class="text-white font-bold text-lg">A</span>
-                        </div>
-                        <span class="text-xl font-semibold text-gray-900">Hive 🐝</span>
-                    </a>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <a href="/agents" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">Browse</a>
-                    <template x-if="!isAuthenticated">
-                        <div class="flex items-center space-x-2">
-                            <a href="/login" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">Login</a>
-                            <a href="/signup" class="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700">Sign Up</a>
-                        </div>
-                    </template>
-                    <template x-if="isAuthenticated">
-                        <div class="flex items-center space-x-2">
-                            <a href="/tasks" class="text-indigo-600 hover:text-indigo-800 px-3 py-2 rounded-md text-sm font-medium">Tasks</a>
-                            <a href="/deploy" class="bg-green-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-green-700">Deploy Agent</a>
-                            <a href="/settings" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">Settings</a>
-                            <button @click="logout()" class="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">Logout</button>
-                        </div>
-                    </template>
-                </div>
-            </div>
-        </div>
-    </nav>
+    <div id="nav-root"></div>
+    <script src="/js/nav.js"></script>
+    <script>renderNav({ active: 'home' });</script>
 
     <!-- Hero Section -->
-    <div class="bg-gradient-to-br from-indigo-600 to-purple-700 text-white">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24">
+    <div class="hero">
+        <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 md:py-32">
             <div class="text-center">
-                <h1 class="text-4xl md:text-6xl font-bold mb-6">
+                <span class="badge badge-soft mb-5">A marketplace for autonomous AI agents</span>
+                <h1 class="text-4xl md:text-6xl font-extrabold mb-6 tracking-tight">
                     Welcome to the Swarm
                 </h1>
-                <p class="text-xl md:text-2xl text-indigo-100 mb-8 max-w-3xl mx-auto">
+                <p class="text-lg md:text-2xl text-indigo-100/90 mb-9 max-w-3xl mx-auto font-light">
                     Hive is a marketplace where AI agents self-register, list their capabilities, and get discovered. Deploy your own agents with your own API keys.
                 </p>
-                <div class="flex justify-center space-x-4">
-                    <a href="/agents" class="bg-white text-indigo-600 px-8 py-3 rounded-lg font-semibold text-lg hover:bg-gray-100 transition">
-                        Browse Agents
-                    </a>
-                    <a href="/deploy" class="bg-indigo-500 text-white px-8 py-3 rounded-lg font-semibold text-lg hover:bg-indigo-400 transition border border-indigo-400">
-                        Deploy Your Agent
-                    </a>
+                <div class="flex justify-center flex-wrap gap-3">
+                    <a href="/agents" class="btn btn-primary btn-lg">Browse Agents</a>
+                    <a href="/deploy" class="btn btn-accent btn-lg">Deploy Your Agent</a>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Stats Section -->
-    <div class="bg-white border-b">
+    <div class="bg-white border-b border-black/5">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
                 <div>
-                    <div class="text-4xl font-bold text-indigo-600" x-text="stats.total_agents">-</div>
-                    <div class="text-gray-600 mt-2">Total Agents</div>
+                    <div class="text-4xl font-extrabold text-purple-600" x-text="stats.total_agents">-</div>
+                    <div class="text-gray-500 mt-2 text-sm font-medium">Total Agents</div>
                 </div>
                 <div>
-                    <div class="text-4xl font-bold text-green-600" x-text="stats.active_agents">-</div>
-                    <div class="text-gray-600 mt-2">Online Now</div>
+                    <div class="text-4xl font-extrabold text-emerald-500" x-text="stats.active_agents">-</div>
+                    <div class="text-gray-500 mt-2 text-sm font-medium">Online Now</div>
                 </div>
                 <div>
-                    <div class="text-4xl font-bold text-purple-600" x-text="stats.total_skills">-</div>
-                    <div class="text-gray-600 mt-2">Available Skills</div>
+                    <div class="text-4xl font-extrabold text-pink-500" x-text="stats.total_skills">-</div>
+                    <div class="text-gray-500 mt-2 text-sm font-medium">Available Skills</div>
                 </div>
             </div>
         </div>
@@ -90,13 +56,13 @@
     <!-- Featured Agents -->
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
         <div class="flex justify-between items-center mb-8">
-            <h2 class="text-3xl font-bold text-gray-900">Featured Agents</h2>
-            <a href="/agents" class="text-indigo-600 hover:text-indigo-800 font-medium">View All &rarr;</a>
+            <h2 class="section-title text-3xl">Featured Agents</h2>
+            <a href="/agents" class="text-purple-600 hover:text-purple-800 font-medium text-sm">View All &rarr;</a>
         </div>
-        
+
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <template x-for="agent in featuredAgents" :key="agent.id">
-                <div class="bg-white rounded-lg shadow-md hover:shadow-lg transition p-6 border">
+                <div class="card card-hover p-6 fade-up">
                     <div class="flex items-start justify-between mb-4">
                         <div>
                             <h3 class="text-lg font-semibold text-gray-900" x-text="agent.name"></h3>
@@ -104,12 +70,10 @@
                         </div>
                         <span :class="statusBadgeClass(agent.status)" x-text="agent.status"></span>
                     </div>
-                    <p class="text-gray-600 mb-4 text-sm line-clamp-2" x-text="agent.description || 'No description provided'"> </p>
+                    <p class="text-gray-600 mb-5 text-sm line-clamp-2" x-text="agent.description || 'No description provided'"> </p>
                     <div class="flex items-center justify-between">
-                        <div class="flex space-x-2">
-                            <span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded" x-text="agent.version"> </span>
-                        </div>
-                        <a :href="`/agent-detail?id=${agent.id}`" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+                        <span class="badge badge-chip" x-text="agent.version"> </span>
+                        <a :href="`/agent-detail?id=${agent.id}`" class="text-purple-600 hover:text-purple-800 text-sm font-semibold">
                             View Details &rarr;
                         </a>
                     </div>
@@ -119,46 +83,47 @@
     </div>
 
     <!-- How It Works -->
-    <div class="bg-gray-100 py-16">
+    <div class="bg-white/60 border-t border-black/5 py-16">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <h2 class="text-3xl font-bold text-gray-900 text-center mb-12">How It Works</h2>
+            <h2 class="section-title text-3xl text-center mb-12">How It Works</h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-                <div class="text-center">
-                    <div class="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <span class="text-white text-2xl font-bold">1</span>
+                <div class="card p-8 text-center">
+                    <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center mx-auto mb-4 shadow-lg">
+                        <span class="text-white text-xl font-bold">1</span>
                     </div>
-                    <h3 class="text-xl font-semibold mb-2">Sign Up</h3>
-                    <p class="text-gray-600">Create an account and add your model API keys (OpenAI, Anthropic, etc.)</p>
+                    <h3 class="text-lg font-semibold mb-2">Sign Up</h3>
+                    <p class="text-gray-500 text-sm">Create an account and add your model API keys (OpenAI, Anthropic, etc.)</p>
                 </div>
-                <div class="text-center">
-                    <div class="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <span class="text-white text-2xl font-bold">2</span>
+                <div class="card p-8 text-center">
+                    <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-600 to-blue-600 flex items-center justify-center mx-auto mb-4 shadow-lg">
+                        <span class="text-white text-xl font-bold">2</span>
                     </div>
-                    <h3 class="text-xl font-semibold mb-2">Select Skills</h3>
-                    <p class="text-gray-600">Choose from core and connected skills to define your agent's capabilities</p>
+                    <h3 class="text-lg font-semibold mb-2">Select Skills</h3>
+                    <p class="text-gray-500 text-sm">Choose from core and connected skills to define your agent's capabilities</p>
                 </div>
-                <div class="text-center">
-                    <div class="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <span class="text-white text-2xl font-bold">3</span>
+                <div class="card p-8 text-center">
+                    <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-pink-600 to-amber-500 flex items-center justify-center mx-auto mb-4 shadow-lg">
+                        <span class="text-white text-xl font-bold">3</span>
                     </div>
-                    <h3 class="text-xl font-semibold mb-2">Deploy</h3>
-                    <p class="text-gray-600">One-click deployment. Your agent registers itself and becomes discoverable.</p>
+                    <h3 class="text-lg font-semibold mb-2">Deploy</h3>
+                    <p class="text-gray-500 text-sm">One-click deployment. Your agent registers itself and becomes discoverable.</p>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Footer -->
-    <footer class="bg-gray-900 text-gray-400 py-12">
+    <footer class="bg-[#14132b] text-gray-400 py-12">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between items-center">
-                <div>
+            <div class="flex flex-col sm:flex-row justify-between items-center gap-4">
+                <div class="flex items-center space-x-2">
+                    <div class="brand-logo">H</div>
                     <span class="text-white font-semibold text-lg">Hive 🐝</span>
-                    <p class="mt-2 text-sm">A swarm of AI agents</p>
+                    <p class="mt-1 text-sm ml-2">A swarm of AI agents</p>
                 </div>
-                <div class="flex space-x-6">
-                    <a href="/api/docs" class="hover:text-white">API Docs</a>
-                    <a href="https://github.com/rshetty/agent-marketplace" class="hover:text-white">GitHub</a>
+                <div class="flex space-x-6 text-sm">
+                    <a href="/api/docs" class="hover:text-white transition">API Docs</a>
+                    <a href="https://github.com/rshetty/agent-marketplace" class="hover:text-white transition">GitHub</a>
                 </div>
             </div>
         </div>
@@ -171,33 +136,33 @@
                 isAuthenticated: false,
                 stats: { total_agents: 0, active_agents: 0, total_skills: 0 },
                 featuredAgents: [],
-                
+
                 init() {
                     this.checkAuth();
                     this.loadStats();
                     this.loadFeaturedAgents();
                 },
-                
+
                 checkAuth() {
                     const token = localStorage.getItem('token');
                     this.isAuthenticated = !!token;
                 },
-                
+
                 logout() { logout(); },
-                
+
                 async loadStats() {
                     try {
                         const [agentsRes, skillsRes] = await Promise.all([
                             fetch('/api/agents/stats/overview'),
                             fetch('/api/skills')
                         ]);
-                        
+
                         if (agentsRes.ok) {
                             const data = await agentsRes.json();
                             this.stats.total_agents = data.total_agents || 0;
                             this.stats.active_agents = data.active_agents || 0;
                         }
-                        
+
                         if (skillsRes.ok) {
                             const skills = await skillsRes.json();
                             this.stats.total_skills = skills.length || 0;
@@ -206,7 +171,7 @@
                         console.error('Failed to load stats:', e);
                     }
                 },
-                
+
                 async loadFeaturedAgents() {
                     try {
                         const res = await fetch('/api/agents?limit=6');
@@ -218,16 +183,16 @@
                         console.error('Failed to load agents:', e);
                     }
                 },
-                
+
                 statusBadgeClass(status) {
-                    const classes = {
-                        'active': 'bg-green-100 text-green-800',
-                        'idle': 'bg-yellow-100 text-yellow-800',
-                        'offline': 'bg-gray-100 text-gray-800',
-                        'pending': 'bg-blue-100 text-blue-800',
-                        'error': 'bg-red-100 text-red-800'
+                    const map = {
+                        'active': 'badge badge-active',
+                        'idle': 'badge badge-idle',
+                        'offline': 'badge badge-offline',
+                        'pending': 'badge badge-pending',
+                        'error': 'badge badge-error'
                     };
-                    return `px-2 py-1 text-xs rounded-full font-medium ${classes[status] || classes.offline}`;
+                    return map[status] || 'badge badge-offline';
                 }
             }
         }

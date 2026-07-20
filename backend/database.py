@@ -36,6 +36,33 @@ async def get_db():
 
 
 async def init_db():
-    """Initialize database tables."""
+    """Initialize database tables and migrate any missing columns.
+
+    `create_all` only creates tables that do not yet exist — it does NOT add
+    columns to existing tables. To keep the app working e2e without manual
+    migrations, we also ALTER existing tables to add any columns the models
+    declare but the database is missing.
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    from sqlalchemy import text
+
+    def _add_missing_columns(dbapi_conn):
+        for table_name, table in Base.metadata.tables.items():
+            rows = dbapi_conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+            existing = {row[1] for row in rows}
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                col_type = str(column.type)
+                nullability = "" if column.nullable else "NOT NULL"
+                default = ""
+                if column.default is not None:
+                    default = f"DEFAULT {column.default.arg}"
+                dbapi_conn.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type} {nullability} {default}")
+                )
+
+    async with engine.begin() as conn:
+        await conn.run_sync(_add_missing_columns)

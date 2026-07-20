@@ -3,93 +3,73 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Detail - Hive 🐝</title>
+    <title>Agent Detail — Hive 🐝</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="js/app.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <link rel="stylesheet" href="/css/theme.css">
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="agentDetailApp()">
-    <!-- Navigation -->
-    <nav class="bg-white shadow-sm border-b">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex items-center">
-                    <a href="/" class="flex items-center space-x-2">
-                        <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                            <span class="text-white font-bold text-lg">A</span>
-                        </div>
-                        <span class="text-xl font-semibold text-gray-900">Agent Marketplace</span>
-                    </a>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <a href="/agents" class="text-gray-600 hover:text-gray-900">Browse</a>
-                    <template x-if="isAuthenticated">
-                        <div class="flex items-center space-x-2">
-                            <a href="/tasks" class="text-gray-600 hover:text-gray-900">Tasks</a>
-                            <a href="/deploy" class="bg-green-600 text-white px-4 py-2 rounded-md">Deploy Agent</a>
-                            <button @click="logout()" class="text-gray-600 hover:text-gray-900">Logout</button>
-                        </div>
-                    </template>
-                </div>
-            </div>
-        </div>
-    </nav>
+    <div id="nav-root"></div>
+    <script src="/js/nav.js"></script>
+    <script>renderNav({ active: 'agents' });</script>
 
     <!-- Main Content -->
-    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         <!-- Loading -->
         <div x-show="loading" class="text-center py-16">
-            <div class="animate-spin w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto"></div>
-            <p class="mt-4 text-gray-600">Loading agent...</p>
+            <div class="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full mx-auto"></div>
+            <p class="mt-4 text-gray-500">Loading agent...</p>
         </div>
 
         <!-- Not Found -->
         <div x-show="!loading && !agent" class="text-center py-16">
-            <div class="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
+            <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                 </svg>
             </div>
             <h3 class="text-lg font-medium text-gray-900 mb-2">Agent not found</h3>
-            <a href="/agents" class="text-indigo-600 hover:text-indigo-800">Browse all agents &rarr;</a>
+            <a href="/agents" class="text-purple-600 hover:text-purple-800 font-medium">Browse all agents &rarr;</a>
         </div>
 
         <!-- Agent Details -->
         <div x-show="agent" class="space-y-6">
             <!-- Header -->
-            <div class="bg-white rounded-lg shadow p-6">
-                <div class="flex items-start justify-between">
-                    <div>
+            <div class="card p-6">
+                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                    <div class="min-w-0">
                         <div class="flex items-center space-x-3">
-                            <h1 class="text-3xl font-bold text-gray-900" x-text="agent.name"></h1>
+                            <h1 class="text-3xl font-bold text-gray-900 truncate" x-text="agent.name"></h1>
                             <span :class="statusBadgeClass(agent.status)" x-text="agent.status"></span>
                         </div>
                         <p class="text-gray-600 mt-2" x-text="agent.description || 'No description provided'"> </p>
                     </div>
-                    <div class="flex items-center space-x-2">
+                    <div class="flex items-center space-x-2 flex-shrink-0 flex-wrap justify-end">
                         <!-- Delegate button — visible to authenticated users for public agents -->
                         <template x-if="isAuthenticated && agent.is_public">
-                            <a :href="`/tasks?agent_id=${agent.id}`"
-                               class="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700">
+                            <a :href="`/tasks?agent_id=${agent.id}`" class="btn btn-primary">
                                 Delegate Task
+                            </a>
+                        </template>
+                        <!-- Link to the agent's OpenClaw dashboard (owner only) -->
+                        <template x-if="isOwner && agent.slug">
+                            <a :href="`/a/${agent.slug}/`" target="_blank" class="btn btn-accent">
+                                🌐 Open Dashboard
                             </a>
                         </template>
                         <!-- Owner controls -->
                         <template x-if="isOwner">
                             <div class="flex items-center space-x-2">
-                                <a :href="`/agent-config?id=${agent.id}`"
-                                   class="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 text-sm font-medium">
+                                <a :href="`/agent-config?id=${agent.id}`" class="btn btn-outline btn-sm">
                                     Configure
                                 </a>
-                                <button @click="restartAgent()" :disabled="restarting"
-                                        class="bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 disabled:opacity-50">
+                                <button @click="restartAgent()" :disabled="restarting" class="btn btn-ghost btn-sm">
                                     <span x-show="!restarting">Restart</span>
                                     <span x-show="restarting">...</span>
                                 </button>
-                                <button @click="deleteAgent()"
-                                        class="bg-red-100 text-red-700 px-4 py-2 rounded-md hover:bg-red-200">
+                                <button @click="deleteAgent()" class="btn btn-danger-soft btn-sm">
                                     Delete
                                 </button>
                             </div>
@@ -114,15 +94,14 @@
             </div>
 
             <!-- Skills -->
-            <div class="bg-white rounded-lg shadow p-6">
+            <div class="card p-6">
                 <h2 class="text-xl font-semibold mb-4">Skills</h2>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <template x-for="skill in agent.skills" :key="skill.id">
-                        <div class="border rounded-md p-4">
+                        <div class="border border-black/5 rounded-xl p-4 hover:border-purple-200 transition">
                             <div class="flex items-center justify-between mb-2">
                                 <h3 class="font-medium" x-text="skill.skill?.display_name || skill.display_name"> </h3>
-                                <span class="text-xs px-2 py-1 rounded"
-                                      :class="skillTierClass(skill.skill?.tier || skill.tier)"
+                                <span class="badge" :class="skillTierClass(skill.skill?.tier || skill.tier)"
                                       x-text="skill.skill?.tier || skill.tier"></span>
                             </div>
                             <p class="text-sm text-gray-600" x-text="skill.skill?.description || skill.description"> </p>
@@ -132,13 +111,13 @@
             </div>
 
             <!-- Logs (Owner Only) -->
-            <div x-show="isOwner && agent.container_id" class="bg-white rounded-lg shadow p-6">
+            <div x-show="isOwner && agent.container_id" class="card p-6">
                 <h2 class="text-xl font-semibold mb-4">Container Logs</h2>
-                <button @click="loadLogs()" :disabled="loadingLogs" class="mb-4 bg-indigo-600 text-white px-4 py-2 rounded-md">
+                <button @click="loadLogs()" :disabled="loadingLogs" class="btn btn-ghost mb-4">
                     <span x-show="!loadingLogs">Refresh Logs</span>
                     <span x-show="loadingLogs">Loading...</span>
                 </button>
-                <pre x-show="logs" class="bg-gray-900 text-gray-100 p-4 rounded-md text-sm font-mono overflow-x-auto max-h-96 overflow-y-auto" x-text="logs"></pre>
+                <pre x-show="logs" class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm font-mono overflow-x-auto max-h-96 overflow-y-auto" x-text="logs"></pre>
             </div>
         </div>
     </div>
@@ -209,23 +188,23 @@
                 },
                 
                 statusBadgeClass(status) {
-                    const classes = {
-                        'active': 'bg-green-100 text-green-800',
-                        'idle': 'bg-yellow-100 text-yellow-800',
-                        'offline': 'bg-gray-100 text-gray-800',
-                        'pending': 'bg-blue-100 text-blue-800',
-                        'error': 'bg-red-100 text-red-800'
+                    const map = {
+                        'active': 'badge badge-active',
+                        'idle': 'badge badge-idle',
+                        'offline': 'badge badge-offline',
+                        'pending': 'badge badge-pending',
+                        'error': 'badge badge-error'
                     };
-                    return `px-3 py-1 text-sm rounded-full font-medium ${classes[status] || classes.offline}`;
+                    return map[status] || 'badge badge-offline';
                 },
-                
+
                 skillTierClass(tier) {
-                    const classes = {
+                    const map = {
                         'core': 'bg-green-100 text-green-800',
                         'connected': 'bg-blue-100 text-blue-800',
                         'premium': 'bg-purple-100 text-purple-800'
                     };
-                    return classes[tier] || classes.core;
+                    return map[tier] || 'bg-green-100 text-green-800';
                 },
                 
                 timeAgo(dateString) {

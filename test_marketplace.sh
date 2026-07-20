@@ -23,7 +23,7 @@ echo ""
 # Test 1: Register a user
 echo "Test 1: User Registration"
 echo "-------------------------"
-USER_EMAIL="test-$(date +%s)@hive.test"
+USER_EMAIL="test-$(date +%s)@example.com"
 USER_PASSWORD="password123"
 
 REGISTER_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/auth/register" \

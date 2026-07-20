@@ -143,6 +143,21 @@ def delete_container(container_id: str):
     """Delete a container."""
     client = get_docker_client()
     if not client:
+        # Local process mode — stop the matching OpenClaw process if this is one.
+        if container_id.startswith("proc-openclaw-"):
+            from services.openclaw_local import (
+                stop_openclaw_agent,
+                _RUNNERS,
+                _RUNNERS_LOCK,
+            )
+            short = container_id.replace("proc-openclaw-", "")
+            # Match by 8-char prefix since we only stored the short id.
+            with _RUNNERS_LOCK:
+                candidate = next(
+                    (aid for aid in _RUNNERS if aid[:8] == short), None
+                )
+            if candidate:
+                stop_openclaw_agent(candidate)
         return True  # Mock success
     try:
         container = client.containers.get(container_id)
@@ -186,33 +201,71 @@ def create_openclaw_container(
     agent_id: str,
     agent_name: str,
     env_vars: dict,
-    api_key: str
+    api_key: str,
+    slug: str = "",
+    hive_domain: str = "",
 ) -> tuple[str, int]:
     """
     Create an OpenClaw container running locally on the Hive server.
-    
+
+    If hive_domain is provided, Traefik labels are attached for automatic
+    subdomain routing (slug.hive.domain → container).
+
     Returns:
         tuple: (container_id, internal_port)
     """
     client = get_docker_client()
     if not client:
-        print(f"Mock: Creating OpenClaw container for agent {agent_id}")
-        return f"mock-openclaw-{agent_id[:8]}", get_available_port()
-    
+        # No Docker in this environment — run a REAL OpenClaw agent as a local
+        # OS process so we still get genuine end-to-end behaviour (running
+        # dashboard, heartbeats, and delegation processing).
+        from services.openclaw_local import spawn_openclaw_agent
+
+        port = get_available_port()
+        skills_raw = (env_vars or {}).get("SKILLS", "") if env_vars else ""
+        skills = [s for s in str(skills_raw).split(",") if s]
+        container_id = spawn_openclaw_agent(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            port=port,
+            api_key=api_key,
+            skills=skills,
+            env_vars=env_vars or {},
+        )
+        print(f"Local process OpenClaw agent for {agent_id} on port {port}")
+        return container_id, port
+
     ensure_network()
-    
+
     port = get_available_port()
     container_name = f"openclaw-{agent_id[:8]}"
-    
+
     environment = {
         "AGENT_ID": agent_id,
         "AGENT_NAME": agent_name,
         "AGENT_API_KEY": api_key,
         "MARKETPLACE_URL": os.getenv("MARKETPLACE_URL", "http://host.docker.internal:8000"),
     }
-    
+
     environment.update(env_vars)
-    
+
+    labels = {
+        "hive/agent-id": agent_id,
+        "hive/agent-name": agent_name,
+        "hive/managed": "true",
+        "hive/type": "openclaw",
+    }
+
+    # Traefik automatic routing when domain is configured
+    if hive_domain and slug:
+        labels.update({
+            "traefik.enable": "true",
+            f"traefik.http.routers.openclaw-{slug}.rule": f"Host(`{slug}.{hive_domain}`)",
+            f"traefik.http.routers.openclaw-{slug}.entrypoints": "websecure",
+            f"traefik.http.routers.openclaw-{slug}.tls.certresolver": "letsencrypt",
+            f"traefik.http.services.openclaw-{slug}.loadbalancer.server.port": str(OPENCLAW_INTERNAL_PORT),
+        })
+
     try:
         container = client.containers.run(
             image=OPENCLAW_IMAGE,
@@ -222,12 +275,7 @@ def create_openclaw_container(
             ports={f"{OPENCLAW_INTERNAL_PORT}/tcp": ("127.0.0.1", port)},
             detach=True,
             restart_policy={"Name": "unless-stopped"},
-            labels={
-                "hive/agent-id": agent_id,
-                "hive/agent-name": agent_name,
-                "hive/managed": "true",
-                "hive/type": "openclaw"
-            }
+            labels=labels,
         )
         return container.id, port
     except Exception as e:

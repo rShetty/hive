@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt asyncpg
 # Copy application
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
+COPY docker/ ./docker/
 
 # Set working directory to backend
 WORKDIR /app/backend

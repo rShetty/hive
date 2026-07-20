@@ -9,6 +9,7 @@ services:
       - AGENT_IMAGE=agent-marketplace-agent:latest
       - MARKETPLACE_URL=${MARKETPLACE_URL:-https://hive.rajeev.me}
       - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY before starting}
+      - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-openclaw/openclaw:latest}
     volumes:
       - ./data:/app/data
       # WARNING: Docker socket grants host-level access. Use a socket proxy in production.

@@ -82,12 +82,27 @@ class AgentClient:
             "requested_at": datetime.utcnow().isoformat()
         }
         
-        # Ensure endpoint has /delegate path if not already specified
+        # Ensure endpoint has /delegate path if not already specified.
+        # Managed/local agents expose their delegation handler at /delegate;
+        # the stored endpoint_url is "/agents/{id}/invoke", so strip the
+        # "/invoke" suffix first so we don't build "/agents/{id}/invoke/delegate"
+        # (which the proxy would misroute to the runtime's /invoke/delegate).
+        if target_endpoint.endswith("/invoke"):
+            target_endpoint = target_endpoint[: -len("/invoke")]
         if not target_endpoint.endswith("/delegate") and "/delegate" not in target_endpoint:
             if target_endpoint.endswith("/"):
                 target_endpoint = target_endpoint + "delegate"
             else:
                 target_endpoint = target_endpoint + "/delegate"
+
+        # The endpoint may be a relative path (managed/local agents). Resolve it
+        # against the local Hive instance so aiohttp gets an absolute URL.
+        if target_endpoint.startswith("/"):
+            if os.getenv("OPENCLAW_DEPLOY_MODE", "local") == "local":
+                _base = "http://localhost:8000"
+            else:
+                _base = self.marketplace_url
+            target_endpoint = _base.rstrip("/") + target_endpoint
         
         try:
             import json as _json

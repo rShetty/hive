@@ -188,6 +188,7 @@ services:
       - HIVE_SSL_CERT=${HIVE_SSL_CERT:-}
       - HIVE_SSL_KEY=${HIVE_SSL_KEY:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS_OVERRIDE:-http://${REMOTE_SERVER}:${REMOTE_PORT},http://localhost:${REMOTE_PORT}}
+      - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-openclaw/openclaw:latest}
       - OPENCLAW_VPS_HOST=${OC_HOST}
       - OPENCLAW_VPS_SSH_KEY_PATH=/root/.ssh/openclaw_deploy_key
       - OPENCLAW_VPS_SSH_USER=${OC_SSH_USER}

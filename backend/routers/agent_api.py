@@ -2,7 +2,7 @@
 import hmac
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Header
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -234,22 +234,42 @@ async def update_agent_profile(
 
 @router.put("/visibility")
 async def update_agent_visibility(
-    visibility: VisibilityUpdate,
+    is_public: bool | None = Query(default=None, description="Make agent public/private"),
+    visibility: VisibilityUpdate | None = None,
     agent: Agent = Depends(get_agent_from_api_key),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Update agent's marketplace visibility and settings.
     Agents can make themselves public/private.
+
+    `is_public` may be supplied either as a query parameter
+    (e.g. `PUT /api/agent/visibility?is_public=true`) or in the JSON body.
     """
-    agent.is_public = visibility.is_public
-    
-    if visibility.marketplace_description is not None:
-        agent.marketplace_description = visibility.marketplace_description
-    
-    if visibility.pricing_model is not None:
+    is_public_final = is_public
+    marketplace_description = None
+    pricing_model = None
+
+    if visibility is not None:
+        if is_public_final is None:
+            is_public_final = visibility.is_public
+        marketplace_description = visibility.marketplace_description
+        pricing_model = visibility.pricing_model
+
+    if is_public_final is None:
+        raise HTTPException(
+            status_code=422,
+            detail="is_public is required (query param or JSON body)",
+        )
+
+    agent.is_public = is_public_final
+
+    if marketplace_description is not None:
+        agent.marketplace_description = marketplace_description
+
+    if pricing_model is not None:
         # Convert Pydantic model to dict for JSON storage
-        agent.pricing_model = visibility.pricing_model.model_dump()
+        agent.pricing_model = pricing_model.model_dump()
     
     await db.commit()
     await db.refresh(agent)

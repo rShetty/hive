@@ -18,6 +18,14 @@ HIVE_URL = os.getenv("HIVE_URL", "")
 HIVE_API_KEY = os.getenv("HIVE_API_KEY", "")
 INSTANCE_ID = os.getenv("INSTANCE_ID", "")
 
+# MCP servers configured for this agent (list of {name, url, description, headers})
+try:
+    MCP_SERVERS = json.loads(os.getenv("MCP_SERVERS", "[]") or "[]")
+    if not isinstance(MCP_SERVERS, list):
+        MCP_SERVERS = []
+except Exception:
+    MCP_SERVERS = []
+
 # Track recent activity in-memory
 _activity: list[dict] = []
 _start_time = datetime.utcnow()
@@ -32,6 +40,85 @@ def _log_activity(kind: str, summary: str, detail: Any = None):
     })
     if len(_activity) > 50:
         _activity.pop()
+
+
+# ── LLM integration ────────────────────────────────────────────────────────
+# OpenClaw agents can call a real LLM when credentials are present. OpenRouter
+# is the default (single key, many models); Anthropic/OpenAI/Google also work
+# if their keys are set. The model id comes from OPENROUTER_MODEL (default
+# tencent/hy3:free) or the provider-specific defaults below.
+
+_OPENAI_MODELS = {
+    "chatgpt-4o": "gpt-4o",
+    "gpt-4o-mini": "gpt-4o-mini",
+}
+_ANTHROPIC_MODELS = {
+    "claude-3-5-sonnet": "claude-3-5-sonnet-latest",
+    "claude-3-haiku": "claude-3-haiku-20240307",
+}
+_GOOGLE_MODELS = {
+    "gemini-1.5-pro": "gemini-1.5-pro",
+    "gemini-1.5-flash": "gemini-1.5-flash",
+}
+
+
+def _resolve_llm() -> Optional[dict]:
+    """Return (base_url, api_key, model) for the first configured provider."""
+    if os.getenv("OPENROUTER_API_KEY"):
+        return {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": os.getenv("OPENROUTER_API_KEY"),
+            "model": os.getenv("OPENROUTER_MODEL", "tencent/hy3:free"),
+        }
+    if os.getenv("OPENAI_API_KEY"):
+        return {
+            "base_url": "https://api.openai.com/v1",
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "model": _OPENAI_MODELS.get(os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "gpt-4o-mini"),
+        }
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return {
+            "base_url": "https://api.anthropic.com/v1",
+            "api_key": os.getenv("ANTHROPIC_API_KEY"),
+            "model": _ANTHROPIC_MODELS.get(os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet"), "claude-3-5-sonnet-latest"),
+        }
+    if os.getenv("GOOGLE_API_KEY"):
+        return {
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key": os.getenv("GOOGLE_API_KEY"),
+            "model": _GOOGLE_MODELS.get(os.getenv("GOOGLE_MODEL", "gemini-1.5-flash"), "gemini-1.5-flash"),
+        }
+    return None
+
+
+async def _call_llm(task: str, system: str = "") -> str:
+    """Call the configured LLM and return its text response."""
+    cfg = _resolve_llm()
+    if not cfg:
+        return (
+            f"[{AGENT_NAME}] Task received: {task[:200]}. "
+            "Connect an LLM via Hive to enable real task execution."
+        )
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": task})
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{cfg['base_url']}/chat/completions",
+                headers={"Authorization": f"Bearer {cfg['api_key']}"},
+                json={"model": cfg["model"], "messages": messages, "max_tokens": 1024},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        _log_activity("error", f"LLM call failed: {e}")
+        return f"[{AGENT_NAME}] Task received: {task[:200]}. (LLM call failed: {e})"
+
 
 
 # ── Dashboard HTML ─────────────────────────────────────────────────────────────
@@ -205,6 +292,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- MCP Servers -->
+      <div class="bg-white rounded-xl border p-4" x-show="stats.mcp_servers.length > 0">
+        <h3 class="text-sm font-semibold text-gray-700 mb-3">MCP Servers</h3>
+        <div class="space-y-2">
+          <template x-for="mcp in stats.mcp_servers" :key="mcp.name">
+            <div class="flex items-center space-x-2">
+              <div class="w-6 h-6 bg-purple-50 rounded-md flex items-center justify-center text-xs">🔌</div>
+              <div class="min-w-0">
+                <div class="text-xs text-gray-700 font-medium" x-text="mcp.name"></div>
+                <div class="text-xs text-gray-400 truncate" x-text="mcp.url"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
       <!-- Recent Activity -->
       <div class="bg-white rounded-xl border p-4">
         <h3 class="text-sm font-semibold text-gray-700 mb-3">Recent Activity</h3>
@@ -257,7 +360,7 @@ function agentDash() {{
     messages: [],
     thinking: false,
     _msgId: 0,
-    stats: {{ tasks_handled: 0, skills_count: 0, skills: [], telegram: false, llm_provider: null }},
+    stats: {{ tasks_handled: 0, skills_count: 0, skills: [], telegram: false, llm_provider: null, mcp_servers: [] }},
     activity: [],
     agentId: '{agent_id}',
 
@@ -375,6 +478,7 @@ async def status():
         "tasks_handled": sum(1 for a in _activity if a["kind"] == "delegation"),
         "telegram": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
         "llm_provider": llm_provider,
+        "mcp_servers": [{"name": m.get("name"), "url": m.get("url")} for m in MCP_SERVERS],
         "uptime_seconds": int((datetime.utcnow() - _start_time).total_seconds()),
         "activity": _activity[:20],
     }
@@ -401,10 +505,11 @@ async def list_skills():
 async def invoke(request: Dict):
     task = request.get("task", request.get("input", ""))
     _log_activity("invoke", f"Task: {str(task)[:80]}")
+    output = await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent.")
     return {
         "status": "success",
         "agent_id": AGENT_ID,
-        "result": {"output": f"[{AGENT_NAME}] Received: {task}. (Connect an LLM in Hive → Configure to enable real responses.)"},
+        "result": {"output": output},
     }
 
 
@@ -476,10 +581,7 @@ async def _run_delegation(delegation_id: str, task: str, callback_url: str | Non
         await asyncio.sleep(0.5)
 
         result_payload = {
-            "output": (
-                f"[{AGENT_NAME}] Task received: {task[:200]}. "
-                "Connect an LLM via Hive to enable real task execution."
-            ),
+            "output": await _call_llm(task, system=f"You are {AGENT_NAME}, a helpful AI agent."),
             "agent_id": AGENT_ID,
         }
 

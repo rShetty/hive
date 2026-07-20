@@ -3,49 +3,62 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign Up - Hive 🐝</title>
+    <title>Sign Up — Hive 🐝</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <link rel="stylesheet" href="/css/theme.css">
 </head>
-<body class="bg-gray-50 min-h-screen flex items-center justify-center">
-    <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-        <div class="text-center mb-8">
-            <div class="w-12 h-12 bg-indigo-600 rounded-lg flex items-center justify-center mx-auto mb-4">
-                <span class="text-white font-bold text-xl">A</span>
+<body class="min-h-screen bg-gray-50">
+    <div class="min-h-screen lg:grid lg:grid-cols-2">
+        <!-- Brand panel -->
+        <div class="hero hidden lg:flex flex-col justify-between p-12 text-white">
+            <div class="flex items-center space-x-3">
+                <div class="brand-logo">H</div>
+                <span class="text-2xl font-bold">Hive 🐝</span>
             </div>
-            <h1 class="text-2xl font-bold text-gray-900">Create account</h1>
-            <p class="text-gray-600 mt-2">Start deploying your AI agents</p>
+            <div>
+                <h2 class="text-4xl font-extrabold leading-tight">Join the swarm.</h2>
+                <p class="mt-4 text-indigo-100/80 text-lg max-w-md">Bring your own agent or spin one up in one click. Add your keys once, deploy anywhere.</p>
+            </div>
+            <p class="text-indigo-200/70 text-sm">© Hive — Agent Marketplace</p>
         </div>
 
-        <form id="signupForm" class="space-y-4">
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
-                <input type="text" name="name" required
-                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            </div>
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                <input type="email" name="email" required
-                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            </div>
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input type="password" name="password" required minlength="8"
-                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <p class="text-xs text-gray-500 mt-1">At least 8 characters</p>
-            </div>
-            <button type="submit" 
-                    class="w-full bg-indigo-600 text-white py-2 rounded-md hover:bg-indigo-700 font-medium">
-                Create Account
-            </button>
-        </form>
+        <!-- Form panel -->
+        <div class="flex items-center justify-center p-6 sm:p-10">
+            <div class="w-full max-w-md">
+                <div class="lg:hidden flex items-center space-x-3 mb-8 justify-center">
+                    <div class="brand-logo">H</div>
+                    <span class="text-2xl font-bold">Hive 🐝</span>
+                </div>
+                <div class="card p-8 fade-up">
+                    <h1 class="text-2xl font-bold text-gray-900">Create account</h1>
+                    <p class="text-gray-500 mt-1 text-sm">Start deploying your AI agents</p>
 
-        <div id="error" class="mt-4 p-3 bg-red-50 text-red-700 rounded-md hidden"></div>
+                    <form id="signupForm" class="space-y-4 mt-6">
+                        <div>
+                            <label class="field-label">Name</label>
+                            <input type="text" name="name" required class="field" placeholder="Ada Lovelace">
+                        </div>
+                        <div>
+                            <label class="field-label">Email</label>
+                            <input type="email" name="email" required class="field" placeholder="you@example.com">
+                        </div>
+                        <div>
+                            <label class="field-label">Password</label>
+                            <input type="password" name="password" required minlength="8" class="field" placeholder="••••••••">
+                            <p class="text-xs text-gray-500 mt-1">At least 8 characters</p>
+                        </div>
+                        <button type="submit" class="btn btn-accent w-full">Create Account</button>
+                    </form>
 
-        <p class="text-center mt-6 text-gray-600">
-            Already have an account? <a href="/login" class="text-indigo-600 hover:text-indigo-800">Sign in</a>
-        </p>
+                    <div id="error" class="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm hidden"></div>
+
+                    <p class="text-center mt-6 text-gray-500 text-sm">
+                        Already have an account? <a href="/login" class="text-purple-600 hover:text-purple-800 font-medium">Sign in</a>
+                    </p>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -53,7 +66,7 @@
             e.preventDefault();
             const form = e.target;
             const errorDiv = document.getElementById('error');
-            
+
             try {
                 const res = await fetch('/api/auth/register', {
                     method: 'POST',
@@ -64,9 +77,9 @@
                         password: form.password.value
                     })
                 });
-                
+
                 const data = await res.json();
-                
+
                 if (res.ok) {
                     // Auto-login after registration
                     const loginRes = await fetch('/api/auth/login', {
@@ -77,7 +90,7 @@
                             password: form.password.value
                         })
                     });
-                    
+
                     const loginData = await loginRes.json();
                     if (loginRes.ok) {
                         localStorage.setItem('token', loginData.access_token);

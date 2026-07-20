@@ -28,14 +28,24 @@ async def ping_agent_endpoint(
         tuple: (success, response_data)
     """
     try:
-        # The health endpoint should be at /health?token=xxx
-        # We'll construct the full URL
+        # The health endpoint is at /agents/{id}/health (backend route that
+        # echoes the token back). For a marketplace proxy URL the endpoint is
+        # "/agents/{id}/invoke", so we swap "/invoke" for "/health".
         if "/agents/" in endpoint_url:
-            # It's a marketplace proxy URL
-            health_url = f"{endpoint_url}/health?token={token}"
+            base = endpoint_url.replace("/invoke", "")
+            health_url = f"{base}/health?token={token}"
         else:
-            # Direct container URL
             health_url = f"{endpoint_url}/health?token={token}"
+
+        # endpoint_url may be a relative path (managed/local agents). Resolve it
+        # against the running Hive instance so aiohttp gets an absolute URL.
+        if health_url.startswith("/"):
+            from os import getenv
+            if getenv("OPENCLAW_DEPLOY_MODE", "local") == "local":
+                _hive_base = "http://localhost:8000"
+            else:
+                _hive_base = getenv("MARKETPLACE_URL") or getenv("HIVE_URL") or "http://localhost:8000"
+            health_url = _hive_base.rstrip("/") + health_url
         
         async with aiohttp.ClientSession() as session:
             async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
@@ -58,7 +68,7 @@ async def ping_agent_endpoint(
 async def perform_endpoint_challenge(
     db: AsyncSession,
     agent_id: str,
-    max_retries: int = 3
+    max_retries: int = 15
 ) -> bool:
     """
     Perform endpoint challenge for a pending agent.
@@ -85,7 +95,10 @@ async def perform_endpoint_challenge(
             agent.endpoint_url,
             agent.health_check_token
         )
-        
+        import logging as _log
+        _log.getLogger("hive").warning("endpoint_challenge attempt %s url=%s ok=%s data=%s",
+                                       attempt, agent.endpoint_url, success, str(data)[:120])
+
         if success:
             agent.status = AgentStatus.ACTIVE.value
             agent.last_health_check = datetime.now(timezone.utc)
@@ -93,7 +106,7 @@ async def perform_endpoint_challenge(
             return True
         
         if attempt < max_retries - 1:
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
     
     # Challenge failed
     agent.status = AgentStatus.ERROR.value

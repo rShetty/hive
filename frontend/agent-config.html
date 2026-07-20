@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/theme.css">
     <style>
         body { font-family: 'Inter', sans-serif; }
         .tab-active { border-bottom: 2px solid #4f46e5; color: #4f46e5; font-weight: 600; }
@@ -19,27 +20,24 @@
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="configApp()">
 
-    <!-- Navigation -->
-    <nav class="bg-white shadow-sm border-b sticky top-0 z-10">
+    <div id="nav-root"></div>
+    <script src="/js/nav.js"></script>
+    <script>renderNav({ active: 'agents' });</script>
+
+    <!-- Secondary breadcrumb under nav -->
+    <div class="bg-white border-b border-black/5 sticky top-16 z-10">
         <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-14">
-                <div class="flex items-center space-x-4">
-                    <a href="/" class="flex items-center space-x-2">
-                        <div class="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
-                            <span class="text-white font-bold text-sm">A</span>
-                        </div>
-                        <span class="text-lg font-semibold text-gray-900">Hive</span>
-                    </a>
+            <div class="flex items-center justify-between h-12">
+                <div class="flex items-center space-x-3 text-sm">
                     <span class="text-gray-300">/</span>
-                    <span class="text-gray-600 text-sm" x-text="agentName || 'Agent Config'"></span>
+                    <span class="text-gray-600" x-text="agentName || 'Agent Config'"></span>
                 </div>
                 <div class="flex items-center space-x-3">
                     <a :href="`/agent-detail?id=${agentId}`" class="text-sm text-gray-500 hover:text-gray-800">&larr; Agent Details</a>
-                    <button @click="logout()" class="text-sm text-gray-500 hover:text-gray-800">Logout</button>
                 </div>
             </div>
         </div>
-    </nav>
+    </div>
 
     <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8" x-show="!loading">
 
@@ -59,7 +57,7 @@
                     <span>Saved &amp; applied</span>
                 </div>
                 <a x-show="dashboardUrl" :href="dashboardUrl" target="_blank"
-                   class="inline-flex items-center space-x-2 bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700">
+                    class="btn btn-accent btn-sm">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
                     </svg>
@@ -86,8 +84,8 @@
                         class="text-xs bg-white border border-gray-200 px-2.5 py-1.5 rounded-lg text-gray-600 hover:bg-gray-50">
                     Copy
                 </button>
-                <a :href="dashboardUrl" target="_blank"
-                   class="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 font-medium">
+                 <a :href="dashboardUrl" target="_blank"
+                    class="btn btn-accent btn-sm">
                     Open →
                 </a>
             </div>
@@ -185,7 +183,7 @@
                                        class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400">
                                 <button @click="saveLLMKey('anthropic')"
                                         :disabled="saving"
-                                        class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                                        class="btn btn-primary btn-sm disabled:opacity-50">
                                     Save
                                 </button>
                             </div>
@@ -230,7 +228,7 @@
                                        class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400">
                                 <button @click="saveLLMKey('openai')"
                                         :disabled="saving"
-                                        class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                                        class="btn btn-primary btn-sm disabled:opacity-50">
                                     Save
                                 </button>
                             </div>
@@ -273,7 +271,7 @@
                                        class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400">
                                 <button @click="saveLLMKey('openrouter')"
                                         :disabled="saving"
-                                        class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                                        class="btn btn-primary btn-sm disabled:opacity-50">
                                     Save
                                 </button>
                             </div>
@@ -316,7 +314,7 @@
                                        class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400">
                                 <button @click="saveLLMKey('google')"
                                         :disabled="saving"
-                                        class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                                        class="btn btn-primary btn-sm disabled:opacity-50">
                                     Save
                                 </button>
                             </div>
@@ -415,7 +413,7 @@
                         <div class="flex items-center space-x-3">
                             <button @click="saveTelegram()"
                                     :disabled="saving || !telegram.botToken"
-                                    class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 font-medium">
+                                    class="btn btn-primary btn-sm disabled:opacity-50 font-medium">
                                 <span x-show="!saving">Save &amp; Register Webhook</span>
                                 <span x-show="saving" class="flex items-center space-x-1">
                                     <svg class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
@@ -428,7 +426,7 @@
                             <button x-show="integrations.telegram?.configured"
                                     @click="verifyTelegram()"
                                     :disabled="saving"
-                                    class="px-4 py-2 bg-white border text-gray-700 text-sm rounded-lg hover:bg-gray-50 disabled:opacity-50">
+                                    class="btn btn-outline btn-sm disabled:opacity-50">
                                 Verify Bot
                             </button>
                         </div>
@@ -570,7 +568,7 @@
                             </div>
                             <button @click="addSkill(skill.id)"
                                     :disabled="saving"
-                                    class="px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-medium rounded-lg hover:bg-indigo-100 disabled:opacity-50 flex-shrink-0 ml-2">
+                                    class="btn btn-soft btn-sm disabled:opacity-50 flex-shrink-0 ml-2">
                                 + Add
                             </button>
                         </div>
@@ -675,6 +673,10 @@
                     this.endpointUrl = data.endpoint_url || '';
                     this.dashboardUrl = data.dashboard_url || '';
                     this.agentSlug = data.slug || '';
+                    // Prefer the Hive-proxied dashboard (/a/{slug}/) so it is
+                    // reachable and auth-gated from anywhere; fall back to the
+                    // raw dashboard_url (e.g. public VPS subdomain) otherwise.
+                    this.dashboardUrl = (data.slug ? `/a/${data.slug}/` : (data.dashboard_url || ''));
                     this.llmProviders = data.llm_providers_configured || [];
                     this.integrations = data.integrations || {};
                     this.agentSkills = data.skills || [];

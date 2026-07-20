@@ -166,6 +166,44 @@ class AgentRegistrationResponse(HiveBaseModel):
     status: str
 
 
+class MCPServerSpec(HiveBaseModel):
+    """An MCP server the agent can use as a tool source."""
+    name: str
+    url: str                       # base URL of the MCP HTTP/SSE server
+    description: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None  # optional auth headers
+
+
+class HostedAgentRequest(HiveBaseModel):
+    """Bring-Your-Own-Key hosted agent.
+
+    The platform hosts the runtime (no endpoint_url required). The user
+    supplies an LLM key + picks tools (skills) and optional MCP servers,
+    and Hive spins up a running agent that accepts requests at the
+    platform-assigned endpoint and exposes a chat + dashboard.
+    """
+    name: str
+    description: Optional[str] = None
+    framework: str = "openclaw"   # openclaw | langchain | crewai | custom
+    # LLM key for this agent (provider -> key). e.g. {"openrouter": "sk-or-..."}
+    model_key: Dict[str, str] = {}
+    skill_ids: List[str] = []
+    skill_names: List[str] = []
+    mcp_servers: List[MCPServerSpec] = []
+    tags: List[str] = []
+    capabilities: List[str] = []
+
+
+class HostedAgentResponse(HiveBaseModel):
+    agent_id: str
+    slug: str
+    api_key: str
+    url: str
+    dashboard_url: str
+    endpoint_url: str
+    status: str
+
+
 class AgentProfileUpdate(HiveBaseModel):
     """Allowed fields for agent self-update. Prevents setting privileged fields."""
     name: Optional[str] = None

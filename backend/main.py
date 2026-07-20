@@ -41,6 +41,12 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     print("👋 Agent Marketplace shutting down...")
+    # Stop any locally-spawned OpenClaw agent processes.
+    try:
+        from services.openclaw_local import cleanup_all
+        cleanup_all()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -204,6 +210,8 @@ if frontend_path and os.path.exists(frontend_path):
     # Also mount specific paths for frontend assets
     if os.path.exists(os.path.join(frontend_path, "js")):
         app.mount("/js", StaticFiles(directory=os.path.join(frontend_path, "js")), name="js")
+    if os.path.exists(os.path.join(frontend_path, "css")):
+        app.mount("/css", StaticFiles(directory=os.path.join(frontend_path, "css")), name="css")
 
 
 def _serve_frontend(filename: str):

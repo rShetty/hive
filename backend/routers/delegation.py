@@ -185,6 +185,23 @@ async def _settle_delegation(
 #  Background executor — runs the agent HTTP call off the request thread
 # ══════════════════════════════════════════════════════════════════════════
 
+def _internal_endpoint_for(openclaw_instance_id: str | None, endpoint_url: str | None) -> str | None:
+    """Prefer internal container-name URL over public host:port.
+
+    When both Hive and the agent run on the shared ``hive-net`` Docker
+    network, Hive can reach the agent directly by container name — this
+    bypasses host firewalls (UFW) that drop bridge→host-port traffic and
+    avoids bouncing requests through the public IP unnecessarily.
+
+    Falls back to the stored public ``endpoint_url`` for external BYOA
+    agents and for any OpenClaw deployments that predate ``hive-net``.
+    """
+    if openclaw_instance_id:
+        # generate_compose uses container_name = openclaw-{instance_id[:8]},
+        # so the DNS name matches on the shared network.
+        return f"http://openclaw-{openclaw_instance_id[:8]}:9000"
+    return endpoint_url
+
 async def _execute_delegation_task(
     delegation_id: str,
     target_endpoint: str,
@@ -1150,6 +1167,7 @@ async def get_user_delegations(
                 "status": t.status,
                 "created_at": t.created_at.isoformat(),
                 "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+                "task_result": t.task_result,
             }
             for t in transactions
         ],
@@ -1184,6 +1202,7 @@ async def get_my_delegations(
                 "status": t.status,
                 "created_at": t.created_at.isoformat(),
                 "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+                "task_result": t.task_result,
                 "role": "delegator" if t.delegating_agent_id == agent.id else "executor",
             }
             for t in transactions

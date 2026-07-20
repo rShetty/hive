@@ -70,6 +70,13 @@ services:
       hive.managed: "true"
       hive.instance-id: "{instance_id}"
       hive.agent-name: "{agent_name}"
+    networks:
+      - default
+      - hive-net
+
+networks:
+  hive-net:
+    external: true
 """
 
 

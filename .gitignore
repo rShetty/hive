@@ -27,3 +27,6 @@ venv/
 data/
 *.db
 *.sqlite
+
+# local agent runtime logs
+docker/agent_app/openclaw-*.log

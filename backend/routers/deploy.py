@@ -728,6 +728,15 @@ async def deploy_hosted_agent(
         })
     await db.commit()
 
+    # Update config_encrypted with the full MCP list (ad-hoc + registry)
+    # so rehydration restores all MCP servers, not just ad-hoc ones.
+    agent.config_encrypted = fernet.encrypt(json.dumps({
+        "framework": req.framework,
+        "model_key": flat_model_key,
+        "mcp_servers": mcp_final,
+    }).encode()).decode()
+    await db.commit()
+
     # Build the runtime env. The user's LLM key (if any) wins; otherwise the
     # server-level key is used as a fallback by the runtime.
     env_vars = {

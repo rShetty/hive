@@ -35,7 +35,8 @@ async def _user_has_grant(db, user_id: str, server_id: str) -> bool:
             Agent.owner_id == user_id,
             AgentMCPAccess.enabled.is_(True),
         )
-    )).scalar_one_or_none()
+        .limit(1)
+    )).scalars().first()
     return row is not None
 
 

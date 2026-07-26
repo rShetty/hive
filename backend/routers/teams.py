@@ -461,6 +461,11 @@ async def _run_team_delegation(
     root_agent_id = team_ctx.get("root_agent_id")
     root_agent_endpoint = team_ctx.get("root_agent_endpoint")
 
+    import logging as _logging
+    _log = _logging.getLogger("hive.teams")
+    _log.info("Team delegation started: team_run_id=%s root_delegation_id=%s root_agent_id=%s endpoint=%s",
+              team_run_id, root_delegation_id, root_agent_id, root_agent_endpoint)
+
     # Load root agent's wallet for escrow
     async with async_session_maker() as db:
         from models.agent import Agent as AgentModel
@@ -475,6 +480,7 @@ async def _run_team_delegation(
 
     # Verify root agent is alive before proceeding
     is_alive = await _check_agent_alive(root_agent)
+    _log.info("Agent alive check: %s (port=%s)", is_alive, root_agent.internal_port)
     if not is_alive:
         await _fail_team_run(
             team_run_id, root_delegation_id,

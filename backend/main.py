@@ -1,6 +1,7 @@
 """Main FastAPI application."""
 import os
 import json
+import asyncio
 from contextlib import asynccontextmanager
 
 # Load .env from project root (two levels up from this file) if present.
@@ -551,7 +552,7 @@ async def agent_dashboard_proxy(
 async def agent_health_check(agent_id: str, token: str, request: Request):
     """
     Health check endpoint for agents.
-    This proxies to the agent container or handles directly.
+    Probes the agent's container/subprocess directly, then reports back.
     """
     from sqlalchemy import select
     from database import async_session_maker
@@ -564,11 +565,29 @@ async def agent_health_check(agent_id: str, token: str, request: Request):
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
         
+        # For managed agents with an internal_port, probe the actual process
+        if agent.internal_port:
+            import httpx
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    r = await client.get(f"http://localhost:{agent.internal_port}/health?token={token}")
+                    if r.status_code == 200:
+                        data = r.json()
+                        return {
+                            "status": "healthy",
+                            "token": token,
+                            "agent_id": agent_id,
+                            "skills": data.get("skills", []),
+                        }
+                    return JSONResponse(status_code=503, content={"error": f"Agent responded {r.status_code}"})
+            except Exception as e:
+                return JSONResponse(status_code=503, content={"error": f"Agent not reachable: {e}"})
+        
+        # Fallback: just verify token (for non-managed agents)
         import hmac as _hmac
         if not _hmac.compare_digest(agent.health_check_token or "", token):
             raise HTTPException(status_code=401, detail="Invalid token")
         
-        # Get skills
         from models.agent_skill import AgentSkill
         from models.skill import Skill
         result = await session.execute(

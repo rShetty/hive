@@ -27,7 +27,16 @@ from services import delegation_hub
 
 
 async def _check_agent_alive(agent: Agent) -> bool:
-    """Quick health check: ping the agent's /health endpoint."""
+    """Quick health check: ping the agent's /health endpoint directly."""
+    # For managed agents with an internal_port, check the port directly
+    if agent.internal_port:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"http://localhost:{agent.internal_port}/health?token=x")
+                return resp.status_code == 200
+        except Exception:
+            return False
+    # Fallback: check via marketplace proxy
     if not agent.endpoint_url:
         return False
     try:
@@ -37,7 +46,7 @@ async def _check_agent_alive(agent: Agent) -> bool:
             endpoint = f"{base_url}{endpoint}"
         health_url = endpoint.replace("/invoke", "/health")
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{health_url}?token=quick")
+            resp = await client.get(f"{health_url}?token=x")
             return resp.status_code == 200
     except Exception:
         return False

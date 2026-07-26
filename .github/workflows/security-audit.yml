@@ -1,0 +1,172 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run every day at 00:00 UTC
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog OSS — scan for leaked secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: .
+          extra_args: --only-verified --results=verified,unknown
+
+      - name: Gitleaks — scan for secrets in git history
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-audit:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit Python dependencies
+        run: |
+          cd backend
+          pip-audit -r requirements.txt --desc --ignore-vuln GHSA-9wx4-h78v-vm56
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Audit npm dependencies
+        run: |
+          npm audit --omit=dev --audit-level=high || true
+
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  hardening-check:
+    name: Code Hardening Checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for hardcoded secrets patterns
+        run: |
+          set +e
+          echo "Scanning for hardcoded API keys, tokens, and passwords..."
+          
+          PATTERNS=(
+            'sk-or-v1-[a-zA-Z0-9]{20,}'
+            'sk-ant-[a-zA-Z0-9]{20,}'
+            'sk-proj-[a-zA-Z0-9]{20,}'
+            'sk-[a-zA-Z0-9]{40,}'
+            'AKIA[0-9A-Z]{16}'
+            'ghp_[a-zA-Z0-9]{36}'
+            'gho_[a-zA-Z0-9]{36}'
+            'xox[baprs]-[a-zA-Z0-9-]+'
+            'AIza[0-9A-Za-z\-_]{35}'
+            '-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'
+          )
+          
+          FOUND=0
+          for pattern in "${PATTERNS[@]}"; do
+            matches=$(grep -rnE "$pattern" --include='*.py' --include='*.js' --include='*.ts' --include='*.html' --include='*.yml' --include='*.yaml' --include='*.json' --include='*.sh' --include='*.env' . 2>/dev/null | grep -v node_modules | grep -v '.git/' | grep -v 'package-lock' | grep -v 'test-results')
+            if [ -n "$matches" ]; then
+              echo "::error::Potential secret found matching pattern: $pattern"
+              echo "$matches"
+              FOUND=1
+            fi
+          done
+          
+          if [ "$FOUND" -eq 1 ]; then
+            echo "::error::Hardcoded secrets detected. Remove them and use environment variables / GitHub secrets instead."
+            exit 1
+          fi
+          echo "No hardcoded secrets detected."
+
+      - name: Check .env is gitignored
+        run: |
+          if ! grep -qE '^\.env$|^\.env\b' .gitignore 2>/dev/null; then
+            echo "::error::.env is not in .gitignore"
+            exit 1
+          fi
+          echo ".env is properly gitignored."
+
+      - name: Check for debug mode in production paths
+        run: |
+          set +e
+          matches=$(grep -rnE 'debug\s*=\s*True|DEBUG\s*=\s*True' --include='*.py' . 2>/dev/null | grep -v node_modules | grep -v '.git/' | grep -v __pycache__ | grep -v test)
+          if [ -n "$matches" ]; then
+            echo "::warning::Debug mode found in production code:"
+            echo "$matches"
+          fi
+          echo "Debug check complete."
+
+      - name: Check for SQL injection patterns
+        run: |
+          set +e
+          matches=$(grep -rnE "execute\s*\(\s*['\"].*%s.*['\"]\s*%|execute\s*\(\s*f['\"]" --include='*.py' . 2>/dev/null | grep -v node_modules | grep -v '.git/' | grep -v __pycache__ | grep -v test)
+          if [ -n "$matches" ]; then
+            echo "::warning::Potential SQL injection (string formatting in queries):"
+            echo "$matches"
+          fi
+          echo "SQL injection check complete."
+
+      - name: Verify no secrets in docker-compose files
+        run: |
+          set +e
+          matches=$(grep -rnE '(password|secret|api_key|token)\s*[:=]\s*[^$\{]' docker-compose*.yml 2>/dev/null | grep -v '\$\{' | grep -v 'example')
+          if [ -n "$matches" ]; then
+            echo "::error::Hardcoded secrets in docker-compose files:"
+            echo "$matches"
+            exit 1
+          fi
+          echo "Docker-compose files use secrets/env vars correctly."

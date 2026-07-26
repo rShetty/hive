@@ -216,6 +216,26 @@ async def startup():
     if MCP_MANAGER:
         MCP_MANAGER._main_loop = _asyncio.get_running_loop()
         await MCP_MANAGER.connect_all()
+    # Start heartbeat loop
+    if HIVE_URL and HIVE_API_KEY:
+        _asyncio.create_task(_heartbeat_loop())
+
+
+async def _send_heartbeat():
+    if not HIVE_URL or not HIVE_API_KEY:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{HIVE_URL}/api/agent/heartbeat",
+                              headers={"X-API-Key": HIVE_API_KEY}, timeout=10.0)
+    except Exception:
+        pass
+
+
+async def _heartbeat_loop():
+    while True:
+        await _send_heartbeat()
+        await asyncio.sleep(60)
 
 
 @app.get("/", response_class=HTMLResponse)

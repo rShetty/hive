@@ -1113,9 +1113,17 @@ async def stream_team_run(
     request: Request,
     team_id: str,
     run_id: str,
-    current_user: User = Depends(get_current_active_user),
+    token: str = "",
     db: AsyncSession = Depends(get_db),
 ):
+    # EventSource can't send Authorization headers, so accept ?token= query param
+    from auth import get_current_user
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token query parameter")
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    current_user = await get_current_user(credentials=creds, db=db)
     result = await db.execute(
         select(Team).where(Team.id == team_id, Team.owner_id == current_user.id)
     )

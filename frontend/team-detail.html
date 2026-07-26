@@ -490,7 +490,8 @@
 
             streamRun(runId) {
                 if (this.eventSource) this.eventSource.close();
-                this.eventSource = new EventSource(`/api/teams/${this.team.id}/runs/${runId}/stream`);
+                const token = localStorage.getItem('token');
+                this.eventSource = new EventSource(`/api/teams/${this.team.id}/runs/${runId}/stream?token=${encodeURIComponent(token)}`);
                 this.eventSource.onmessage = (e) => {
                     try {
                         const event = JSON.parse(e.data);

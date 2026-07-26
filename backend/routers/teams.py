@@ -953,13 +953,8 @@ async def start_team_run(
 
 # ────────────── STREAM ──────────────
 
-delegation_status: dict = {}
-delegation_logs: dict = {}
-
-
-async def add_delegation_log(delegation_id: str, level: str, message: str):
-    if delegation_id in delegation_logs:
-        delegation_logs[delegation_id].append({"level": level, "message": message})
+# delegation_status, delegation_logs, and add_delegation_log are imported
+# from routers.delegation at the top of this file. Do NOT redefine them here.
 
 
 async def stream_team_run_events(team_run_id: str, team: Team, db: AsyncSession) -> AsyncGenerator[str, None]:
@@ -1011,7 +1006,10 @@ async def stream_team_run_events(team_run_id: str, team: Team, db: AsyncSession)
     # Replay logs
     if tx_id:
         for line in delegation_logs.get(tx_id, []):
-            yield _emit({"type": "log", "agent": root_td.agent.name if root_td and root_td.agent else "Agent", "level": line.get("level", "info"), "message": line["message"]})
+            agent_name = root_td.agent.name if root_td and root_td.agent else "Agent"
+            level = line.get("level", "info") if isinstance(line, dict) else "info"
+            message = line.get("message", str(line)) if isinstance(line, dict) else str(line)
+            yield _emit({"type": "log", "agent": agent_name, "level": level, "message": message})
 
     # If already terminal, emit finished and return
     if run.status in ["completed", "failed"]:
@@ -1035,12 +1033,18 @@ async def stream_team_run_events(team_run_id: str, team: Team, db: AsyncSession)
                 try:
                     while True:
                         event = queue.get_nowait()
-                        yield _emit(event)
-                        if event.get("type") == "status":
+                        # Normalize hub events to the format the frontend expects
+                        if event.get("type") == "log" and "data" in event:
+                            d = event["data"]
+                            yield _emit({"type": "log", "agent": root_td.agent.name if root_td and root_td.agent else "Agent", "level": d.get("level", "info"), "message": d.get("message", "")})
+                        elif event.get("type") == "status":
                             status = event.get("data", {}).get("status")
+                            yield _emit({"type": "status_update", "status": status, "team_run_id": team_run_id})
                             if status in ["completed", "failed"]:
                                 yield _emit({"type": "team_run_finished", "status": status, "team_run_id": team_run_id})
                                 return
+                        else:
+                            yield _emit(event)
                 except asyncio.QueueEmpty:
                     pass
 
@@ -1072,7 +1076,9 @@ async def stream_team_run_events(team_run_id: str, team: Team, db: AsyncSession)
                         if len(current_logs) > seen_log_count:
                             for line in current_logs[seen_log_count:]:
                                 agent_name = root_td.agent.name if root_td and root_td.agent else "Agent"
-                                yield _emit({"type": "log", "agent": agent_name, "level": line.get("level", "info"), "message": line["message"]})
+                                level = line.get("level", "info") if isinstance(line, dict) else "info"
+                                message = line.get("message", str(line)) if isinstance(line, dict) else str(line)
+                                yield _emit({"type": "log", "agent": agent_name, "level": level, "message": message})
                             seen_log_count = len(current_logs)
 
                     # Emit tree / output if appeared

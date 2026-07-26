@@ -165,12 +165,14 @@ jobs:
     needs: [secret-scan, dependency-audit, hardening-check]
     if: ${{ (github.event_name == 'push' && needs.secret-scan.result == 'success' && needs.dependency-audit.result == 'success' && needs.hardening-check.result == 'success') || github.event_name == 'workflow_dispatch' }}
     steps:
-      - name: Deploy via SSH
+      - name: Deploy via SSH (with retries)
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          timeout: 60s
           command_timeout: 30m
           script: |
             set -e
@@ -221,3 +223,95 @@ jobs:
             echo "ERROR: Health check failed after 5 attempts"
             docker compose -f docker-compose.prod.yml logs --tail=50
             exit 1
+
+      - name: Retry deploy if SSH failed
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          timeout: 60s
+          command_timeout: 30m
+          script: |
+            set -e
+
+            REPO_DIR="/opt/hive"
+
+            if [ ! -d "$REPO_DIR" ]; then
+              git clone https://github.com/rShetty/hive.git "$REPO_DIR"
+            fi
+
+            cd "$REPO_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+
+            cat > .env << EOF
+            ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+            HIVE_URL=http://localhost:8080
+            HIVE_URL_OVERRIDE=https://hive.rajeev.me
+            ALLOWED_ORIGINS_OVERRIDE=https://hive.rajeev.me
+            HIVE_DOMAIN=hive.rajeev.me
+            HIVE_SSL_CERT=/etc/letsencrypt/live/hive.rajeev.me/fullchain.pem
+            HIVE_SSL_KEY=/etc/letsencrypt/live/hive.rajeev.me/privkey.pem
+            COOKIE_SECURE=1
+            EOF
+
+            docker build -t agent-marketplace-agent:latest -f docker/Dockerfile.agent docker/ || true
+            docker compose -f docker-compose.prod.yml down
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+
+            sleep 10
+            for i in 1 2 3 4 5; do
+              if curl -sf http://localhost:8080/api/health; then
+                echo ""
+                echo "DEPLOY SUCCESS (retry): hive.rajeev.me is healthy"
+                exit 0
+              fi
+              echo "Health check attempt $i failed, waiting..."
+              sleep 5
+            done
+
+            echo "ERROR: Health check failed after 5 attempts"
+            docker compose -f docker-compose.prod.yml logs --tail=50
+            exit 1
+
+      - name: Retry deploy (2nd retry)
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          timeout: 90s
+          command_timeout: 30m
+          script: |
+            set -e
+
+            cd /opt/hive
+            git fetch origin main
+            git reset --hard origin/main
+
+            cat > .env << EOF
+            ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+            HIVE_URL=http://localhost:8080
+            HIVE_URL_OVERRIDE=https://hive.rajeev.me
+            ALLOWED_ORIGINS_OVERRIDE=https://hive.rajeev.me
+            HIVE_DOMAIN=hive.rajeev.me
+            HIVE_SSL_CERT=/etc/letsencrypt/live/hive.rajeev.me/fullchain.pem
+            HIVE_SSL_KEY=/etc/letsencrypt/live/hive.rajeev.me/privkey.pem
+            COOKIE_SECURE=1
+            EOF
+
+            docker build -t agent-marketplace-agent:latest -f docker/Dockerfile.agent docker/ || true
+            docker compose -f docker-compose.prod.yml down
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+
+            sleep 10
+            curl -sf http://localhost:8080/api/health && echo "" && echo "DEPLOY SUCCESS (retry 2)" || (echo "FAILED" && docker compose -f docker-compose.prod.yml logs --tail=50 && exit 1)

@@ -456,6 +456,9 @@
                 this.finalOutput = run.output_data?.output || '';
                 if (run.status === 'running' || run.status === 'pending') {
                     this.streamRun(run.id);
+                } else {
+                    // Fetch full run data (delegations, output_data, error_message)
+                    this.fetchRun(run.id);
                 }
             },
 

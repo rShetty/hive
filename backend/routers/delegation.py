@@ -992,6 +992,7 @@ async def complete_delegation(
         if team_run:
             team_run.status = "completed"
             team_run.completed_at = datetime.utcnow()
+            team_run.output_data = completion.result
             child_result = await db.execute(
                 select(TeamDelegation).where(TeamDelegation.team_run_id == team_run.id)
             )

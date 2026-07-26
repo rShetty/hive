@@ -587,7 +587,42 @@ async def _run_team_delegation(
                 timeout=AGENT_DELEGATION_TIMEOUT,
                 sync=True,
             )
-            # Root agent completed synchronously — callback was already called inside agent
+
+            # Extract output from sync result and update TeamRun
+            output = invoke_result.get("result", {}).get("output", "")
+            result_payload = {"output": output, "agent_id": root_agent_id}
+
+            async with async_session_maker() as db:
+                td_result = await db.execute(
+                    select(TeamDelegation).where(TeamDelegation.delegation_id == root_delegation_id)
+                )
+                root_td = td_result.scalar_one_or_none()
+                tree = {}
+                if root_td:
+                    root_td.status = "completed"
+                    root_td.completed_at = _dt.utcnow()
+                    root_td.result_data = result_payload
+                    tree[root_td.id] = {
+                        "agent_id": root_td.agent_id,
+                        "parent_id": None,
+                        "status": "completed",
+                        "result": result_payload,
+                    }
+
+                run_result = await db.execute(select(TeamRun).where(TeamRun.id == team_run_id))
+                run = run_result.scalar_one_or_none()
+                if run:
+                    run.status = "completed"
+                    run.completed_at = _dt.utcnow()
+                    run.output_data = result_payload
+                    run.delegation_tree = tree
+                await db.commit()
+
+            delegation_hub.publish(root_delegation_id, {
+                "type": "status",
+                "data": {"status": "completed", "result": result_payload},
+            })
+            await add_delegation_log(root_delegation_id, "success", "Team delegation completed")
             return
 
         await add_delegation_log(

@@ -293,6 +293,7 @@ def _build_system_prompt(base: str = "") -> str:
 @app.post("/invoke")
 async def invoke(request: Dict):
     task = request.get("task", request.get("input", ""))
+    context = request.get("context", {})
     _log_activity("invoke", f"Task: {str(task)[:80]}")
     output = await _call_llm(task, system=_build_system_prompt())
     return {
@@ -307,8 +308,12 @@ async def delegate(request: Dict):
     delegation_id = request.get("delegation_id", "unknown")
     task = request.get("task", "")
     callback_url = request.get("callback_url")
+    sync = request.get("sync", False)
+    context = request.get("context", {})
 
     _log_activity("delegation", f"Task: {str(task)[:80]}", {"delegation_id": delegation_id})
+    if sync:
+        return await _run_delegation_sync(delegation_id, task, callback_url, context)
     asyncio.create_task(_run_delegation(delegation_id, task, callback_url))
 
     return {
@@ -316,6 +321,22 @@ async def delegate(request: Dict):
         "agent_id": AGENT_ID,
         "delegation_id": delegation_id,
     }
+
+
+async def _run_delegation_sync(delegation_id: str, task: str, callback_url: str | None, context: dict) -> dict:
+    try:
+        await _post_progress(delegation_id, "info", "Processing task")
+        await asyncio.sleep(0.3)
+        system_prompt = _build_system_prompt()
+        output = await _call_llm(task, system=system_prompt)
+        result_payload = {"output": output, "agent_id": AGENT_ID}
+        await _post_progress(delegation_id, "success", "Task complete (sync)")
+        await _complete_delegation(delegation_id, result_payload, tokens_used=1.0)
+        return {"status": "completed", "agent_id": AGENT_ID, "delegation_id": delegation_id, "result": result_payload}
+    except Exception as e:
+        await _post_progress(delegation_id, "error", f"Task failed: {e}")
+        await _fail_delegation(delegation_id, str(e))
+        return {"status": "failed", "agent_id": AGENT_ID, "delegation_id": delegation_id, "error": str(e)}
 
 
 async def _post_progress(delegation_id: str, level: str, message: str, data: dict | None = None):
@@ -370,12 +391,7 @@ async def _complete_delegation(delegation_id: str, result: dict, tokens_used: fl
             await client.post(
                 f"{HIVE_URL}/api/delegate/{delegation_id}/complete",
                 headers={"X-API-Key": HIVE_API_KEY, "Content-Type": "application/json"},
-                json={
-                    "delegation_id": delegation_id,
-                    "agent_id": AGENT_ID,
-                    "output": result.get("output", ""),
-                    "tokens_used": tokens_used,
-                },
+                json={"result": result, "tokens_used": tokens_used},
             )
     except Exception as e:
         _log_activity("error", f"Complete delegation failed: {e}")

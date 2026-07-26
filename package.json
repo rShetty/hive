@@ -7,10 +7,13 @@
     "test:playwright": "npx playwright test",
     "test:playwright:ui": "npx playwright test --ui",
     "test:workflow": "npx playwright test tests/playwright/workflow.spec.js",
-    "test:workflow:headed": "npx playwright test tests/playwright/workflow.spec.js --headed"
+    "test:workflow:headed": "npx playwright test tests/playwright/workflow.spec.js --headed",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
-    "uuid": "^10.0.0"
+    "uuid": "^10.0.0",
+    "wrangler": "^4.114.0"
   }
 }

@@ -91,10 +91,14 @@ function renderSidebar({ active = '' } = {}) {
 
   const groupsHtml = SIDEBAR_TREE.map((g) => {
     const hasActive = g.items.some((i) => i.key === active);
-    const open = hasActive || collapsed ? ' open' : '';
+    // Default to expanded so all nav links are visible for navigation.
+    // Per-group collapse state is persisted; only override default when set.
+    const stateKey = 'sb-group-' + g.group;
+    const wasCollapsed = localStorage.getItem(stateKey) === '1';
+    const open = (collapsed || hasActive || !wasCollapsed) ? ' open' : '';
     return `
       <div class="sb-group${open}${collapsed ? ' sb-collapsed' : ''}" data-group="${g.group}">
-        <button class="sb-group-head" onclick="sbToggleGroup(this)" title="${g.group}">
+        <button class="sb-group-head" onclick="sbToggleGroup(this)" title="${g.group}" aria-expanded="${open ? 'true' : 'false'}">
           <span class="sb-group-ic">${sbIcon(g.icon)}</span>
           <span class="sb-group-label">${g.group}</span>
           <span class="sb-chevron">
@@ -138,15 +142,37 @@ function renderSidebar({ active = '' } = {}) {
     </nav>
     ${footer}
     <div class="sb-scrim" onclick="sbToggleMobile()"></div>
-    <button class="sb-mobile-toggle" onclick="sbToggleMobile()" title="Menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-    </button>
   `;
+  // The mobile hamburger must live OUTSIDE the sidebar element: the sidebar
+  // uses `transform: translateX(...)` on mobile, which becomes the containing
+  // block for any `position: fixed` descendant — so a toggle rendered inside
+  // would be dragged off-screen with the sidebar and be untappable when closed.
+  ensureMobileToggle();
+}
+
+function ensureMobileToggle() {
+  let t = document.getElementById('sb-mobile-toggle-btn');
+  if (t) return;
+  t = document.createElement('button');
+  t.id = 'sb-mobile-toggle-btn';
+  t.className = 'sb-mobile-toggle';
+  t.title = 'Menu';
+  t.setAttribute('aria-label', 'Toggle navigation');
+  t.setAttribute('aria-controls', 'sidebar-root');
+  t.innerHTML = '<svg class="sb-ic-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg><svg class="sb-ic-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+  t.addEventListener('click', sbToggleMobile);
+  document.body.appendChild(t);
 }
 
 function sbToggleGroup(btn) {
   const group = btn.closest('.sb-group');
-  if (group) group.classList.toggle('open');
+  if (!group) return;
+  group.classList.toggle('open');
+  const isOpen = group.classList.contains('open');
+  const head = group.querySelector('.sb-group-head');
+  if (head) head.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  const label = group.getAttribute('data-group');
+  if (label) localStorage.setItem('sb-group-' + label, isOpen ? '0' : '1');
 }
 
 function sbToggleCollapse() {
@@ -159,14 +185,25 @@ function sbToggleCollapse() {
 
 function sbToggleMobile() {
   const sb = document.getElementById('sidebar-root');
-  if (sb) sb.classList.toggle('sb-mobile-open');
+  if (!sb) return;
+  const open = sb.classList.toggle('sb-mobile-open');
+  const btn = document.getElementById('sb-mobile-toggle-btn');
+  if (btn) {
+    btn.classList.toggle('sb-mobile-toggle-open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
 }
 
 document.addEventListener('click', (e) => {
   const sb = document.getElementById('sidebar-root');
   if (!sb) return;
   if (sb.classList.contains('sb-mobile-open') &&
-      !e.target.closest('.sb') && !e.target.closest('.sb-mobile-toggle')) {
+      !e.target.closest('#sidebar-root') && !e.target.closest('#sb-mobile-toggle-btn')) {
     sb.classList.remove('sb-mobile-open');
+    const btn = document.getElementById('sb-mobile-toggle-btn');
+    if (btn) {
+      btn.classList.remove('sb-mobile-toggle-open');
+      btn.setAttribute('aria-expanded', 'false');
+    }
   }
 });

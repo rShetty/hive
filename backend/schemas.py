@@ -556,3 +556,237 @@ class VisibilityUpdate(HiveBaseModel):
     is_public: bool
     marketplace_description: Optional[str] = None
     pricing_model: Optional[PricingModel] = None
+
+
+# ============== Workflow Schemas ==============
+
+class WorkflowStepCreate(HiveBaseModel):
+    agent_id: str
+    name: str
+    description: Optional[str] = None
+    step_order: int = 0
+    task_template: str
+    max_tokens: int = 100
+    timeout_seconds: int = 300
+    input_mapping: Optional[Dict[str, Any]] = None
+    condition: Optional[Dict[str, Any]] = None
+
+
+class WorkflowStepUpdate(HiveBaseModel):
+    agent_id: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    step_order: Optional[int] = None
+    task_template: Optional[str] = None
+    max_tokens: Optional[int] = None
+    timeout_seconds: Optional[int] = None
+    input_mapping: Optional[Dict[str, Any]] = None
+    condition: Optional[Dict[str, Any]] = None
+
+
+class WorkflowStepResponse(HiveBaseModel):
+    id: str
+    workflow_id: str
+    agent_id: str
+    agent_name: Optional[str] = None
+    agent_description: Optional[str] = None
+    agent_status: Optional[str] = None
+    agent_skills: Optional[List[str]] = None
+    agent_endpoint: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    step_order: int
+    task_template: str
+    max_tokens: int
+    timeout_seconds: int
+    input_mapping: Optional[Dict[str, Any]] = None
+    condition: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkflowCreate(HiveBaseModel):
+    name: str
+    description: Optional[str] = None
+    status: Optional[str] = None
+    max_tokens_per_run: int = 500
+    timeout_seconds: int = 600
+    auto_retry: bool = False
+    max_retries: int = 2
+    steps: Optional[List[WorkflowStepCreate]] = None
+
+
+class WorkflowUpdate(HiveBaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    max_tokens_per_run: Optional[int] = None
+    timeout_seconds: Optional[int] = None
+    auto_retry: Optional[bool] = None
+    max_retries: Optional[int] = None
+
+
+class WorkflowResponse(HiveBaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    owner_id: str
+    status: str
+    max_tokens_per_run: int
+    timeout_seconds: int
+    auto_retry: bool
+    max_retries: int
+    step_count: int = 0
+    last_run_status: Optional[str] = None
+    last_run_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkflowDetailResponse(WorkflowResponse):
+    steps: List[WorkflowStepResponse] = []
+
+
+class WorkflowRunCreate(HiveBaseModel):
+    task: str = ""  # The task for all agents to collaborate on
+    config_overrides: Optional[Dict[str, Any]] = None
+
+
+class WorkflowStepRunResponse(HiveBaseModel):
+    id: str
+    workflow_run_id: str
+    workflow_step_id: str
+    agent_id: str
+    agent_name: Optional[str] = None
+    delegation_id: Optional[str] = None
+    status: str
+    step_order: int
+    input_data: Optional[Dict[str, Any]] = None
+    output_data: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    tokens_used: int
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkflowRunResponse(HiveBaseModel):
+    id: str
+    workflow_id: str
+    workflow_name: Optional[str] = None
+    user_id: str
+    status: str
+    task: Optional[str] = None  # Convenience: the task string for this run
+    input_data: Optional[Dict[str, Any]] = None
+    output_data: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    total_tokens_used: int
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+    step_runs: List[WorkflowStepRunResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ============== Team Schemas ==============
+
+class TeamMemberCreate(HiveBaseModel):
+    agent_id: str
+    role: str = "member"
+    reports_to_agent_id: Optional[str] = None
+    max_tokens: int = 200
+
+
+class TeamCreate(HiveBaseModel):
+    name: str
+    description: Optional[str] = None
+    root_agent_id: str
+    max_depth: int = 3
+    members: List[TeamMemberCreate] = []
+
+
+class TeamUpdate(HiveBaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    root_agent_id: Optional[str] = None
+    max_depth: Optional[int] = None
+
+
+class TeamMemberResponse(HiveBaseModel):
+    id: str
+    agent_id: str
+    agent_name: Optional[str] = None
+    agent_status: Optional[str] = None
+    role: str
+    reports_to_member_id: Optional[str] = None
+    max_tokens: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamResponse(HiveBaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    owner_id: str
+    root_agent_id: str
+    root_agent_name: Optional[str] = None
+    max_depth: int
+    member_count: int = 0
+    last_run_status: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamDetailResponse(TeamResponse):
+    members: List[TeamMemberResponse] = []
+
+
+class TeamDelegationResponse(HiveBaseModel):
+    id: str
+    parent_delegation_id: Optional[str] = None
+    delegation_id: Optional[str] = None
+    agent_id: str
+    agent_name: Optional[str] = None
+    task_description: Optional[str] = None
+    status: str
+    tokens_used: int
+    result_data: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    depth: int
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamRunCreate(HiveBaseModel):
+    task: str
+
+
+class TeamRunResponse(HiveBaseModel):
+    id: str
+    team_id: str
+    team_name: Optional[str] = None
+    user_id: str
+    task: str
+    status: str
+    delegation_tree: Optional[Dict[str, Any]] = None
+    total_tokens_used: int
+    output_data: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+    delegations: List[TeamDelegationResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)

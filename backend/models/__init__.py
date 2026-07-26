@@ -9,6 +9,8 @@ from .transaction import Transaction
 from .agent_review import AgentReview
 from .delegation_log import DelegationLog
 from .mcp import MCPServer, AgentMCPAccess
+from .workflow import Workflow, WorkflowStep, WorkflowRun, WorkflowStepRun
+from .team import Team, TeamMember, TeamRun, TeamDelegation
 
 __all__ = [
     "User",
@@ -22,4 +24,12 @@ __all__ = [
     "DelegationLog",
     "MCPServer",
     "AgentMCPAccess",
+    "Workflow",
+    "WorkflowStep",
+    "WorkflowRun",
+    "WorkflowStepRun",
+    "Team",
+    "TeamMember",
+    "TeamRun",
+    "TeamDelegation",
 ]

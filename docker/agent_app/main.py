@@ -602,7 +602,7 @@ async def root():
     return {"agent_id": AGENT_ID, "name": AGENT_NAME, "skills": SKILLS, "status": "running"}
 
 
-def _build_system_prompt(base: str = "") -> str:
+def _build_system_prompt(base: str = "", context: dict | None = None) -> str:
     """Build system prompt with skill instructions injected."""
     prompt = base or f"You are {AGENT_NAME}, a helpful AI agent."
     skill_instructions = [
@@ -612,6 +612,32 @@ def _build_system_prompt(base: str = "") -> str:
     ]
     if skill_instructions:
         prompt += "\n\nYour capabilities:\n" + "\n".join(f"- {inst}" for inst in skill_instructions)
+
+    team_ctx = (context or {}).get("team_context")
+    if team_ctx:
+        members = team_ctx.get("members", [])
+        member_lines = []
+        for m in members:
+            line = f"  - {m['name']} (agent_id={m['agent_id']}, role={m['role']})"
+            if m.get("reports_to"):
+                line += f" [reports to: {m['reports_to']}]"
+            member_lines.append(line)
+        members_str = "\n".join(member_lines) if member_lines else "  (none)"
+        prompt += (
+            f"\n\n## Team Context\n"
+            f"You are the root agent of team '{team_ctx.get('team_name', 'unknown')}'.\n"
+            f"Team description: {team_ctx.get('description', '')}\n"
+            f"Max delegation depth: {team_ctx.get('max_depth', 3)}\n"
+            f"Your role: {team_ctx.get('role', 'root')}\n"
+            f"\nTeam members:\n{members_str}\n"
+            f"\n## Delegation Instructions\n"
+            f"To delegate work to a team member, use the Hive delegation API:\n"
+            f"POST /api/delegate/request\n"
+            f"Headers: Content-Type: application/json, Authorization: Bearer <your_token>\n"
+            f'Body: {{"target_agent_id": "<member_agent_id>", "task_description": "<what you want done>", "max_tokens": <number>}}\n'
+            f"Member agent IDs are listed above. Delegate sub-tasks to the most appropriate member.\n"
+            f"Always wait for results and compile a final answer from all delegated work.\n"
+        )
     return prompt
 
 
@@ -623,8 +649,9 @@ async def list_skills():
 @app.post("/invoke")
 async def invoke(request: Dict):
     task = request.get("task", request.get("input", ""))
+    context = request.get("context", {})
     _log_activity("invoke", f"Task: {str(task)[:80]}")
-    output = await _call_llm(task, system=_build_system_prompt())
+    output = await _call_llm(task, system=_build_system_prompt(context=context))
     return {
         "status": "success",
         "agent_id": AGENT_ID,
@@ -636,18 +663,22 @@ async def invoke(request: Dict):
 async def delegate(request: Dict):
     """Hive delegation endpoint.
 
-    Returns ``in_progress`` immediately so Hive can respond to the requester
-    in <100 ms; the real work runs in a background task that pushes progress
-    updates over HTTP while executing and signs a completion callback at the
-    end. This exercises the full streaming path on the Hive side.
+    Supports two modes:
+    - sync (default for team orchestration): runs task inline and returns result
+    - async: returns ``in_progress`` immediately, runs in background, calls back
     """
     delegation_id = request.get("delegation_id", "unknown")
     task = request.get("task", "")
     callback_url = request.get("callback_url")
+    context = request.get("context") or {}
+    sync = request.get("sync", False)
 
     _log_activity("delegation", f"Task: {str(task)[:80]}", {"delegation_id": delegation_id})
 
-    asyncio.create_task(_run_delegation(delegation_id, task, callback_url))
+    if sync:
+        return await _run_delegation_sync(delegation_id, task, callback_url, context)
+
+    asyncio.create_task(_run_delegation(delegation_id, task, callback_url, context))
 
     return {
         "status": "in_progress",
@@ -671,10 +702,54 @@ async def _post_progress(delegation_id: str, level: str, message: str, data: dic
         _log_activity("error", f"Progress post failed: {e}")
 
 
-async def _run_delegation(delegation_id: str, task: str, callback_url: str | None):
+async def _run_delegation_sync(delegation_id: str, task: str, callback_url: str | None, context: dict | None = None) -> dict:
+    """Execute delegation synchronously and return result directly."""
+    try:
+        team_ctx = (context or {}).get("team_context")
+        if team_ctx:
+            await _post_progress(delegation_id, "thinking", f"Running as root of team '{team_ctx.get('team_name', 'unknown')}'")
+        else:
+            await _post_progress(delegation_id, "thinking", "Reading task and planning steps")
+        await asyncio.sleep(0.3)
+
+        await _post_progress(delegation_id, "action", f"Processing: {task[:120]}")
+
+        system_prompt = _build_system_prompt(context=context)
+
+        result_payload = {
+            "output": await _call_llm(task, system=system_prompt),
+            "agent_id": AGENT_ID,
+        }
+
+        await _post_progress(delegation_id, "success", "Task complete (sync)")
+        await _complete_delegation(delegation_id, result_payload, tokens_used=1.0)
+
+        return {
+            "status": "completed",
+            "agent_id": AGENT_ID,
+            "delegation_id": delegation_id,
+            "result": result_payload,
+        }
+    except Exception as e:
+        _log_activity("error", f"Delegation {delegation_id} failed: {e}")
+        await _post_progress(delegation_id, "error", f"Execution failed: {e}")
+        await _fail_delegation(delegation_id, str(e))
+        return {
+            "status": "failed",
+            "agent_id": AGENT_ID,
+            "delegation_id": delegation_id,
+            "error": str(e),
+        }
+
+
+async def _run_delegation(delegation_id: str, task: str, callback_url: str | None, context: dict | None = None):
     """Execute the delegation in the background with streamed progress."""
     try:
-        await _post_progress(delegation_id, "thinking", "Reading task and planning steps")
+        team_ctx = (context or {}).get("team_context")
+        if team_ctx:
+            await _post_progress(delegation_id, "thinking", f"Running as root of team '{team_ctx.get('team_name', 'unknown')}'")
+        else:
+            await _post_progress(delegation_id, "thinking", "Reading task and planning steps")
         await asyncio.sleep(0.8)
 
         await _post_progress(
@@ -699,8 +774,10 @@ async def _run_delegation(delegation_id: str, task: str, callback_url: str | Non
 
         await asyncio.sleep(0.5)
 
+        system_prompt = _build_system_prompt(context=context)
+
         result_payload = {
-            "output": await _call_llm(task, system=_build_system_prompt()),
+            "output": await _call_llm(task, system=system_prompt),
             "agent_id": AGENT_ID,
         }
 

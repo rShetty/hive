@@ -1,0 +1,16 @@
+{
+  "name": "hive-e2e-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end tests for Hive workflow feature",
+  "scripts": {
+    "test:playwright": "npx playwright test",
+    "test:playwright:ui": "npx playwright test --ui",
+    "test:workflow": "npx playwright test tests/playwright/workflow.spec.js",
+    "test:workflow:headed": "npx playwright test tests/playwright/workflow.spec.js --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "uuid": "^10.0.0"
+  }
+}

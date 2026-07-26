@@ -30,17 +30,17 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Res
 # Rate limit configurations for different endpoints
 RATE_LIMITS = {
     # Authentication endpoints
-    "auth_login": "10/minute",
-    "auth_register": "50/hour",
+    "auth_login": "120/minute",
+    "auth_register": "600/hour",
     
     # Agent registration
     "agent_register": "50/hour",
     "agent_invite": "50/hour",
     
     # Delegation (most critical to rate limit)
-    "delegate_request": "10/minute",
-    "delegate_complete": "20/minute",
-    "delegate_callback": "30/minute",
+    "delegate_request": "60/minute",
+    "delegate_complete": "60/minute",
+    "delegate_callback": "60/minute",
     
     # Marketplace browsing (lenient)
     "marketplace_list": "100/minute",

@@ -146,7 +146,10 @@ class Harness:
         self._grant_tokens(email)
         self._check_delegation()
 
-        # 10. Frontend assets are served
+        # 10. Team delegation: create team, run task, verify completion
+        self._check_team_delegation()
+
+        # 11. Frontend assets are served
         for path in ("/css/theme.css", "/js/nav.js", "/deploy", "/login", "/signup"):
             s, _ = self.call("GET", path)
             self.check(f"static {path}", s == 200, f"status {s}")
@@ -276,6 +279,64 @@ class Harness:
                             return
             time.sleep(3)
         self.check("delegation task_result", False, "no result within timeout")
+
+    def _check_team_delegation(self):
+        """Create a team with the deployed agent as root, run a task, verify completion."""
+        if not self.agent_id:
+            self.check("team delegation", False, "no agent")
+            return
+
+        # Create team (root agent only, no members — self-handle scenario)
+        s, c = self.call("POST", "/api/teams/", {
+            "name": "E2E Team",
+            "description": "harness team",
+            "root_agent_id": self.agent_id,
+            "max_depth": 2,
+            "members": [],
+        }, token=self.token)
+        if s != 201:
+            self.check("team create", False, f"status {s} {c[:120]}")
+            return
+        self.check("team create", True)
+        team = json.loads(c)
+        team_id = team["id"]
+
+        # Run team task
+        s, c = self.call("POST", f"/api/teams/{team_id}/run",
+                         {"task": "What is 1+1? Reply with just the number."},
+                         token=self.token)
+        if s != 200:
+            self.check("team run", False, f"status {s} {c[:120]}")
+            self.call("DELETE", f"/api/teams/{team_id}", token=self.token)
+            return
+        self.check("team run", True)
+        run = json.loads(c)
+        run_id = run["id"]
+
+        # Poll for completion
+        completed = False
+        for _ in range(30):
+            s, c = self.call("GET", f"/api/teams/{team_id}/runs/{run_id}", token=self.token)
+            if s == 200:
+                r = json.loads(c)
+                if r["status"] == "completed":
+                    completed = True
+                    has_delegations = len(r.get("delegations", [])) > 0
+                    self.check("team delegation completed", True,
+                               f"{len(r.get('delegations', []))} delegations")
+                    self.check("team delegation tree", has_delegations,
+                               "no delegations found")
+                    break
+                if r["status"] == "failed":
+                    self.check("team delegation completed", False,
+                               r.get("error_message", "failed"))
+                    break
+            time.sleep(3)
+        if not completed:
+            self.check("team delegation completed", False, "timeout")
+
+        # Cleanup
+        self.call("DELETE", f"/api/teams/{team_id}", token=self.token)
 
 
 def main():

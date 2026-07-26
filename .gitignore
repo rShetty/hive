@@ -30,3 +30,9 @@ data/
 
 # local agent runtime logs
 docker/agent_app/openclaw-*.log
+
+# Node
+node_modules/
+test-results/
+.DS_Store
+playwright-report/

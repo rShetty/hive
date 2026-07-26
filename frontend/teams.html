@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teams — Hive 🐝</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/theme.css">
+    <style>
+        .team-card { transition: all 0.15s ease; }
+        .team-card:hover { background: #f9fafb; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="teamsApp()">
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'teams' });</script>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <!-- Header -->
+        <div class="flex items-start justify-between mb-8 gap-4 flex-wrap">
+            <div>
+                <h1 class="section-title text-3xl">Teams</h1>
+                <p class="text-gray-500 mt-1">Organize agents into hierarchical teams for delegated orchestration</p>
+            </div>
+            <a href="/teams/new" class="btn btn-primary" data-testid="create-team-btn">+ New Team</a>
+        </div>
+
+        <!-- Empty state -->
+        <template x-if="teams.length === 0 && !loading">
+            <div class="bg-white rounded-lg shadow-md p-12 text-center" data-testid="empty-state">
+                <div class="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <span class="text-3xl">👥</span>
+                </div>
+                <h2 class="text-xl font-semibold text-gray-900 mb-2">No teams yet</h2>
+                <p class="text-gray-500 mb-6">Create a team to organize agents with hierarchical delegation.</p>
+                <a href="/teams/new" class="btn btn-primary">+ New Team</a>
+            </div>
+        </template>
+
+        <!-- Teams grid -->
+        <div x-show="teams.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" data-testid="teams-grid">
+            <template x-for="team in teams" :key="team.id">
+                <a :href="`/teams/${team.id}`" class="card card-hover p-6 flex flex-col team-card" data-testid="team-card">
+                    <div class="flex items-start justify-between mb-3">
+                        <div class="min-w-0 flex-1">
+                            <h3 class="text-lg font-semibold text-gray-900 truncate" x-text="team.name" data-testid="team-name"></h3>
+                            <p class="text-sm text-gray-500 mt-1" x-text="team.description || 'No description'"></p>
+                        </div>
+                    </div>
+
+                    <!-- Root agent -->
+                    <div class="flex items-center gap-2 mb-4 text-sm text-gray-600">
+                        <span class="text-gray-400">Root:</span>
+                        <span class="font-medium" x-text="team.root_agent_name || 'Unknown'" data-testid="root-agent-name"></span>
+                    </div>
+
+                    <!-- Stats -->
+                    <div class="grid grid-cols-2 gap-3 text-sm mb-4">
+                        <div class="bg-gray-50 rounded-lg p-3">
+                            <div class="text-xs text-gray-500">Members</div>
+                            <div class="font-semibold text-gray-900" x-text="team.member_count" data-testid="member-count"></div>
+                        </div>
+                        <div class="bg-gray-50 rounded-lg p-3">
+                            <div class="text-xs text-gray-500">Max depth</div>
+                            <div class="font-semibold text-gray-900" x-text="team.max_depth"></div>
+                        </div>
+                    </div>
+
+                    <!-- Last run status -->
+                    <div class="flex items-center justify-between pt-4 border-t border-black/5 mt-auto">
+                        <div class="text-xs text-gray-400" x-text="'Created ' + timeAgo(team.created_at)"></div>
+                        <template x-if="team.last_run_status">
+                            <span class="text-xs px-2 py-0.5 rounded-full"
+                                  :class="team.last_run_status === 'completed' ? 'bg-green-100 text-green-700' : team.last_run_status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'"
+                                  x-text="team.last_run_status" data-testid="last-run-status"></span>
+                        </template>
+                    </div>
+                </a>
+            </template>
+        </div>
+
+        <!-- Loading -->
+        <div x-show="loading" class="text-center py-16">
+            <div class="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full mx-auto"></div>
+            <p class="mt-4 text-gray-500">Loading teams...</p>
+        </div>
+    </div>
+    </main>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script>
+    function teamsApp() {
+        return {
+            teams: [],
+            loading: true,
+            async init() {
+                if (!isAuthenticated()) {
+                    window.location.href = '/login?next=/teams';
+                    return;
+                }
+                try {
+                    const token = localStorage.getItem('token');
+                    const res = await fetch('/api/teams/', {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (res.ok) {
+                        this.teams = await res.json();
+                    }
+                } catch (e) {
+                    console.error('Failed to load teams', e);
+                }
+                this.loading = false;
+            },
+            timeAgo(dateStr) {
+                const d = new Date(dateStr);
+                const now = new Date();
+                const diff = Math.floor((now - d) / 1000);
+                if (diff < 60) return 'just now';
+                if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+                if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+                return Math.floor(diff / 86400) + 'd ago';
+            }
+        };
+    }
+    </script>
+</body>
+</html>

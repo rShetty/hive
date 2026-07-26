@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Workflows — Hive 🐝</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/theme.css">
+    <style>
+        .workflow-card { transition: all 0.15s ease; }
+        .workflow-card:hover { background: #f9fafb; }
+        .step-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="workflowsApp()">
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'workflows' });</script>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <!-- Header -->
+        <div class="flex items-start justify-between mb-8 gap-4 flex-wrap">
+            <div>
+                <h1 class="section-title text-3xl">Workflows</h1>
+                <p class="text-gray-500 mt-1">Orchestrate multi-agent pipelines with sequential steps</p>
+            </div>
+            <a href="/workflows/new" class="btn btn-primary">+ New Workflow</a>
+        </div>
+
+        <!-- Empty state -->
+        <template x-if="workflows.length === 0 && !loading">
+            <div class="bg-white rounded-lg shadow-md p-12 text-center">
+                <div class="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <span class="text-3xl">⚡</span>
+                </div>
+                <h2 class="text-xl font-semibold text-gray-900 mb-2">No workflows yet</h2>
+                <p class="text-gray-500 mb-6">Create your first workflow to chain agents into a pipeline.</p>
+                <a href="/workflows/new" class="btn btn-primary">+ New Workflow</a>
+            </div>
+        </template>
+
+        <!-- Workflows grid -->
+        <div x-show="workflows.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <template x-for="wf in workflows" :key="wf.id">
+                <div class="card card-hover p-6 flex flex-col">
+                    <div class="flex items-start justify-between mb-3">
+                        <div class="min-w-0 flex-1">
+                            <h3 class="text-lg font-semibold text-gray-900 truncate" x-text="wf.name"></h3>
+                            <p class="text-sm text-gray-500 mt-1" x-text="wf.description || 'No description'"></p>
+                        </div>
+                        <span :class="statusBadgeClass(wf.status)" x-text="wf.status" class="flex-shrink-0 ml-2"></span>
+                    </div>
+
+                    <!-- Step preview -->
+                    <div class="flex items-center gap-2 mb-4 text-sm text-gray-600">
+                        <span class="font-medium" x-text="wf.step_count + ' step' + (wf.step_count !== 1 ? 's' : '')"></span>
+                        <template x-if="wf.last_run_status">
+                            <span>
+                                <span class="text-gray-400 mx-1">·</span>
+                                <span>Last run:</span>
+                                <span :class="runStatusColor(wf.last_run_status)" x-text="wf.last_run_status"></span>
+                            </span>
+                        </template>
+                    </div>
+
+                    <!-- Stats -->
+                    <div class="grid grid-cols-2 gap-3 text-sm mb-4">
+                        <div class="bg-gray-50 rounded-lg p-3">
+                            <div class="text-xs text-gray-500">Max tokens</div>
+                            <div class="font-semibold text-gray-900" x-text="wf.max_tokens_per_run"></div>
+                        </div>
+                        <div class="bg-gray-50 rounded-lg p-3">
+                            <div class="text-xs text-gray-500">Timeout</div>
+                            <div class="font-semibold text-gray-900" x-text="wf.timeout_seconds + 's'"></div>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="flex items-center justify-between pt-4 border-t border-black/5 mt-auto">
+                        <div class="text-xs text-gray-400" x-text="'Created ' + timeAgo(wf.created_at)"></div>
+                        <div class="flex items-center gap-2">
+                            <a :href="`/workflows/${wf.id}`" class="btn btn-ghost btn-sm">Edit</a>
+                            <button @click="runWorkflow(wf)" :disabled="wf.status !== 'active'"
+                                    class="btn btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                Run
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Loading -->
+        <div x-show="loading" class="text-center py-16">
+            <div class="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full mx-auto"></div>
+            <p class="mt-4 text-gray-500">Loading workflows...</p>
+        </div>
+    </div>
+
+    <!-- Run Modal -->
+    <div x-show="showRunModal"
+         x-transition.opacity
+         @keydown.escape.window="showRunModal = false"
+         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+         style="display:none">
+        <div @click.stop class="bg-white rounded-lg shadow-xl w-full max-w-lg">
+            <div class="px-6 py-4 border-b flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-gray-900">Run Workflow</h2>
+                <button @click="showRunModal = false" class="text-gray-400 hover:text-gray-600">✕</button>
+            </div>
+            <div class="px-6 py-5 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Workflow</label>
+                    <div class="text-sm text-gray-900 font-medium" x-text="runTarget?.name"></div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Task</label>
+                    <textarea x-model="runInput"
+                              rows="4"
+                              placeholder="Describe the task for all agents to collaborate on..."
+                              class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"></textarea>
+                    <p class="text-xs text-gray-400 mt-1">All agents in the pipeline will work on this task together</p>
+                </div>
+                <div x-show="runError" class="text-sm text-red-600" x-text="runError"></div>
+            </div>
+            <div class="px-6 py-4 bg-gray-50 rounded-b-lg flex justify-end gap-2">
+                <button @click="showRunModal = false" class="btn btn-ghost btn-sm">Cancel</button>
+                <button @click="confirmRun()" :disabled="isRunning" class="btn btn-primary btn-sm">
+                    <span x-show="!isRunning">Start Run</span>
+                    <span x-show="isRunning">Starting...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script>
+        function workflowsApp() {
+            return {
+                loading: true,
+                workflows: [],
+                showRunModal: false,
+                runTarget: null,
+                runInput: '',
+                runError: '',
+                isRunning: false,
+
+                async init() {
+                    if (!isAuthenticated()) {
+                        window.location.href = '/login?next=/workflows';
+                        return;
+                    }
+                    await this.loadWorkflows();
+                    this.loading = false;
+                },
+
+                async loadWorkflows() {
+                    try {
+                        const res = await apiFetch('/api/workflows');
+                        if (res.ok) {
+                            this.workflows = await res.json();
+                        }
+                    } catch (e) {
+                        console.error('Failed to load workflows:', e);
+                    }
+                },
+
+                statusBadgeClass(s) {
+                    const map = {
+                        draft: 'badge badge-pending',
+                        active: 'badge badge-active',
+                        archived: 'badge badge-offline',
+                    };
+                    return map[s] || 'badge badge-offline';
+                },
+
+                runStatusColor(s) {
+                    const map = {
+                        completed: 'text-green-600',
+                        failed: 'text-red-600',
+                        running: 'text-blue-600',
+                        pending: 'text-gray-500',
+                    };
+                    return map[s] || 'text-gray-500';
+                },
+
+                timeAgo(iso) {
+                    if (!iso) return '';
+                    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+                    if (diff < 60) return 'just now';
+                    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+                    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+                    return Math.floor(diff / 86400) + 'd ago';
+                },
+
+                runWorkflow(wf) {
+                    this.runTarget = wf;
+                    this.runInput = '';
+                    this.runError = '';
+                    this.showRunModal = true;
+                },
+
+                async confirmRun() {
+                    if (!this.runTarget) return;
+                    this.isRunning = true;
+                    this.runError = '';
+                    try {
+                        const res = await apiFetch(`/api/workflows/${this.runTarget.id}/run`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ task: this.runInput }),
+                        });
+                        if (!res.ok) {
+                            const err = await res.json().catch(() => ({}));
+                            this.runError = err.detail || `Failed (${res.status})`;
+                            return;
+                        }
+                        const data = await res.json();
+                        this.showRunModal = false;
+                        // Navigate to run detail or workflow builder
+                        window.location.href = `/workflows/${this.runTarget.id}?run=${data.id}`;
+                    } catch (e) {
+                        this.runError = e.message || 'Failed to start run';
+                    } finally {
+                        this.isRunning = false;
+                    }
+                },
+            };
+        }
+    </script>
+    </main>
+    </div>
+</body>
+</html>

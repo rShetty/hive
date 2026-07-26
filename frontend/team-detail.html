@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Team — Hive 🐝</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/theme.css">
+    <style>
+        .pulse-ring { animation: pulse-ring 2s ease-out infinite; }
+        @keyframes pulse-ring {
+            0% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
+            70% { box-shadow: 0 0 0 8px rgba(139, 92, 246, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0); }
+        }
+        /* Paperclip chain */
+        .clip-chain { display: flex; flex-direction: column; gap: 0; }
+        .clip-node {
+            position: relative;
+            background: white;
+            border: 1.5px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 12px 16px;
+            transition: all 0.2s ease;
+        }
+        .clip-node:hover { border-color: #a78bfa; box-shadow: 0 2px 8px rgba(139,92,246,0.1); }
+        .clip-node.root { border-left: 4px solid #8b5cf6; }
+        .clip-node.child { border-left: 4px solid #6366f1; }
+        .clip-node.completed { border-color: #86efac; }
+        .clip-node.failed { border-color: #fca5a5; }
+        .clip-link {
+            width: 2px;
+            height: 16px;
+            margin: 0 auto;
+            background: linear-gradient(to bottom, #c4b5fd, #a5b4fc);
+            border-radius: 1px;
+        }
+        .clip-link::after {
+            content: '🔗';
+            position: relative;
+            left: -7px;
+            top: 2px;
+            font-size: 10px;
+            opacity: 0.4;
+        }
+        .log-line { animation: fade-in 0.15s ease; }
+        @keyframes fade-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; } }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .status-dot.running { background: #fbbf24; animation: pulse-ring 2s ease-out infinite; }
+        .status-dot.completed { background: #34d399; }
+        .status-dot.failed { background: #f87171; }
+        .status-dot.pending { background: #d1d5db; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="teamDetailApp()">
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'teams' });</script>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <!-- Loading -->
+        <template x-if="loading">
+            <div class="text-center py-16">
+                <div class="animate-spin w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full mx-auto"></div>
+                <p class="mt-4 text-gray-500">Loading team...</p>
+            </div>
+        </template>
+
+        <!-- Not found -->
+        <template x-if="!loading && !team && !isNew">
+            <div class="text-center py-16">
+                <h2 class="text-xl font-semibold text-gray-900">Team not found</h2>
+                <a href="/teams" class="text-purple-600 hover:underline mt-2 inline-block">Back to Teams</a>
+            </div>
+        </template>
+
+        <!-- Create new team form -->
+        <template x-if="isNew">
+            <div class="max-w-2xl mx-auto">
+                <div class="mb-6">
+                    <a href="/teams" class="text-sm text-purple-600 hover:underline">&larr; Back to Teams</a>
+                </div>
+                <div class="card p-8">
+                    <h1 class="text-2xl font-bold text-gray-900 mb-6">Create New Team</h1>
+                    <div class="space-y-5">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Team Name</label>
+                            <input x-model="createForm.name" type="text" placeholder="e.g. Research Team" class="field w-full" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                            <input x-model="createForm.description" type="text" placeholder="Optional description" class="field w-full" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Root Agent</label>
+                            <select x-model="createForm.root_agent_id" class="field w-full">
+                                <template x-for="agent in agents" :key="agent.id">
+                                    <option :value="agent.id" x-text="agent.name"></option>
+                                </template>
+                            </select>
+                            <p x-show="agents.length === 0" class="text-sm text-amber-600 mt-1">No active agents found. Deploy an agent first.</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Max Depth</label>
+                            <input x-model.number="createForm.max_depth" type="number" min="1" max="10" class="field w-24" />
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="block text-sm font-medium text-gray-700">Members</label>
+                                <button @click="createForm.members.push({ agent_id: agents.length > 0 ? agents[0].id : '', role: 'member', reports_to_agent_id: '' })" type="button" class="text-sm text-purple-600 hover:underline">+ Add member</button>
+                            </div>
+                            <template x-for="(m, idx) in createForm.members" :key="idx">
+                                <div class="flex items-center gap-2 mb-2 p-3 bg-gray-50 rounded-lg">
+                                    <select x-model="m.agent_id" class="field text-sm flex-1">
+                                        <template x-for="agent in agents" :key="agent.id">
+                                            <option :value="agent.id" x-text="agent.name"></option>
+                                        </template>
+                                    </select>
+                                    <select x-model="m.role" class="field text-sm w-28">
+                                        <option value="member">Member</option>
+                                        <option value="lead">Lead</option>
+                                        <option value="senior">Senior</option>
+                                    </select>
+                                    <select x-model="m.reports_to_agent_id" class="field text-sm flex-1">
+                                        <option value="">Reports to (root)</option>
+                                        <template x-for="agent in agents" :key="agent.id">
+                                            <option :value="agent.id" x-text="agent.name"></option>
+                                        </template>
+                                    </select>
+                                    <button @click="createForm.members.splice(idx, 1)" type="button" class="text-red-400 hover:text-red-600 text-lg">&times;</button>
+                                </div>
+                            </template>
+                        </div>
+                        <div x-show="createError" class="p-3 bg-red-50 text-red-700 rounded-lg text-sm" x-text="createError"></div>
+                        <div class="flex justify-end gap-3 pt-2">
+                            <a href="/teams" class="btn btn-soft">Cancel</a>
+                            <button @click="createTeam()" :disabled="creating || !createForm.name || !createForm.root_agent_id" class="btn btn-primary" data-testid="submit-create-team">
+                                <span x-show="!creating">Create Team</span>
+                                <span x-show="creating">Creating...</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- Team content -->
+        <template x-if="!loading && team">
+            <div>
+                <!-- Breadcrumb -->
+                <div class="mb-6 text-sm text-gray-500">
+                    <a href="/teams" class="hover:text-purple-600">Teams</a>
+                    <span class="mx-2">/</span>
+                    <span class="text-gray-900" x-text="team.name"></span>
+                </div>
+
+                <!-- Header -->
+                <div class="flex items-start justify-between mb-8 gap-4 flex-wrap">
+                    <div>
+                        <h1 class="section-title text-3xl" x-text="team.name" data-testid="team-title"></h1>
+                        <p class="text-gray-500 mt-1" x-text="team.description || 'No description'" data-testid="team-description"></p>
+                        <div class="flex items-center gap-4 mt-2 text-sm text-gray-600">
+                            <span>Root: <strong x-text="team.root_agent_name" data-testid="root-agent"></strong></span>
+                            <span>Max depth: <strong x-text="team.max_depth"></strong></span>
+                            <span>Members: <strong x-text="team.members?.length || 0" data-testid="member-count"></strong></span>
+                        </div>
+                    </div>
+                    <button @click="showRunModal = true" class="btn btn-primary" data-testid="run-team-btn">Run Team</button>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <!-- Left: Org chart + Delegation chain -->
+                    <div class="space-y-6">
+                        <!-- Org Chart -->
+                        <div class="card p-6">
+                            <h2 class="text-lg font-semibold text-gray-900 mb-4">Team Structure</h2>
+                            <div data-testid="org-chart">
+                                <template x-for="member in orgChart" :key="member.id">
+                                    <div class="border rounded-lg p-3 mb-2 bg-white" :style="`margin-left: ${member.depth * 24}px`">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold"
+                                                 :class="member.role === 'lead' ? 'bg-purple-100 text-purple-700' : member.role === 'senior' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'"
+                                                 x-text="member.agent_name?.charAt(0) || '?'"></div>
+                                            <div class="min-w-0 flex-1">
+                                                <div class="font-medium text-sm truncate" x-text="member.agent_name" data-testid="member-name"></div>
+                                                <div class="text-xs text-gray-500" x-text="member.role" data-testid="member-role"></div>
+                                            </div>
+                                            <template x-if="member.depth === 0">
+                                                <span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">root</span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Delegation Chain (Paperclip style) -->
+                        <div class="card p-6" x-show="activeRun">
+                            <h2 class="text-lg font-semibold text-gray-900 mb-4">Delegation Chain</h2>
+                            <template x-if="activeRun && activeRun.delegations && activeRun.delegations.length > 0">
+                                <div class="clip-chain" data-testid="delegation-tree">
+                                    <template x-for="(d, idx) in delegationChain" :key="d.id">
+                                        <div>
+                                            <!-- Link between nodes -->
+                                            <template x-if="idx > 0">
+                                                <div class="clip-link"></div>
+                                            </template>
+                                            <!-- Node -->
+                                            <div class="clip-node" :class="d.depth === 0 ? 'root' : 'child', d.status">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="status-dot" :class="d.status"></span>
+                                                    <div class="min-w-0 flex-1">
+                                                        <div class="flex items-center gap-2">
+                                                            <span class="text-sm font-medium" x-text="d.agent_name || (d.agent_id || '').slice(0,8)" data-testid="delegation-agent"></span>
+                                                            <span class="text-xs px-1.5 py-0.5 rounded" :class="d.depth === 0 ? 'bg-purple-100 text-purple-600' : 'bg-blue-100 text-blue-600'" x-text="d.depth === 0 ? 'root' : 'depth ' + d.depth"></span>
+                                                        </div>
+                                                        <div class="text-xs text-gray-500 truncate mt-0.5" x-text="d.task_description || '—'"></div>
+                                                    </div>
+                                                    <template x-if="d.result_data?.output">
+                                                        <div class="text-xs text-green-600 max-w-[200px] truncate" x-text="d.result_data.output"></div>
+                                                    </template>
+                                                    <template x-if="d.error_message">
+                                                        <div class="text-xs text-red-500 max-w-[200px] truncate" x-text="d.error_message"></div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                            <template x-if="!activeRun || !activeRun.delegations || activeRun.delegations.length === 0">
+                                <div class="text-center py-8 text-gray-400">
+                                    <p class="text-sm">No delegations yet. Run the team to see the chain.</p>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Right: Active run + logs + results -->
+                    <div class="space-y-6">
+                        <!-- Active Run -->
+                        <template x-if="activeRun">
+                            <div class="card p-6">
+                                <div class="flex items-center justify-between mb-4">
+                                    <h2 class="text-lg font-semibold text-gray-900">Active Run</h2>
+                                    <span class="px-3 py-1 rounded-full text-sm font-medium"
+                                          :class="activeRun.status === 'completed' ? 'bg-green-100 text-green-700' : activeRun.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'"
+                                          x-text="activeRun.status" data-testid="run-status"></span>
+                                </div>
+                                <div class="text-sm text-gray-600 mb-2">
+                                    <span class="font-medium">Task:</span> <span x-text="activeRun.task" data-testid="run-task"></span>
+                                </div>
+                                <div class="text-xs text-gray-400 mb-4">
+                                    Started <span x-text="activeRun.started_at ? timeAgo(activeRun.started_at) : '—'"></span>
+                                </div>
+
+                                <!-- Result output -->
+                                <template x-if="finalOutput">
+                                    <div class="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                                        <div class="text-sm font-medium text-green-700 mb-1">Result</div>
+                                        <div class="text-sm text-gray-800" x-text="finalOutput"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+
+                        <!-- Live Logs -->
+                        <div class="card p-6" x-show="activeRun">
+                            <h2 class="text-lg font-semibold text-gray-900 mb-3">Live Logs</h2>
+                            <div class="bg-gray-900 text-gray-100 rounded-lg p-4 max-h-80 overflow-y-auto text-sm font-mono" data-testid="live-logs">
+                                <template x-for="(line, idx) in logs" :key="idx">
+                                    <div class="log-line">
+                                        <span class="text-gray-500" x-text="line.time"></span>
+                                        <span :class="line.level === 'error' ? 'text-red-400' : line.level === 'success' ? 'text-green-400' : line.level === 'warning' ? 'text-yellow-400' : 'text-gray-500'" x-text="line.agent ? `[${line.agent}]` : ''"></span>
+                                        <span class="text-gray-300" x-text="line.message"></span>
+                                    </div>
+                                </template>
+                                <template x-if="logs.length === 0">
+                                    <div class="text-gray-500 text-center py-4">Waiting for events...</div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Run History -->
+                        <div class="card p-6">
+                            <h2 class="text-lg font-semibold text-gray-900 mb-4">Run History</h2>
+                            <template x-if="runs.length === 0">
+                                <p class="text-gray-400 text-center py-8">No runs yet. Click "Run Team" to start.</p>
+                            </template>
+                            <div class="space-y-2">
+                                <template x-for="run in runs" :key="run.id">
+                                    <div class="border rounded-lg p-3 bg-white hover:bg-gray-50 cursor-pointer" @click="selectRun(run)" data-testid="run-item">
+                                        <div class="flex items-center justify-between">
+                                            <div class="min-w-0 flex-1">
+                                                <div class="text-sm font-medium text-gray-900 truncate" x-text="run.task"></div>
+                                                <div class="text-xs text-gray-500 mt-0.5" x-text="timeAgo(run.created_at)"></div>
+                                            </div>
+                                            <span class="text-xs px-2 py-0.5 rounded-full ml-2 flex-shrink-0"
+                                                  :class="run.status === 'completed' ? 'bg-green-100 text-green-700' : run.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'"
+                                                  x-text="run.status"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- Run Modal -->
+    <template x-if="showRunModal">
+        <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showRunModal = false">
+            <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
+                <h2 class="text-xl font-semibold text-gray-900 mb-4">Run Team</h2>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Task</label>
+                    <textarea x-model="runTask" class="w-full border rounded-lg p-3 text-sm" rows="3"
+                              placeholder="Describe the task for this team..." data-testid="run-task-input"></textarea>
+                </div>
+                <div class="flex justify-end gap-3">
+                    <button @click="showRunModal = false" class="btn btn-ghost" data-testid="cancel-run-btn">Cancel</button>
+                    <button @click="startRun()" :disabled="!runTask.trim() || runStarting" class="btn btn-primary disabled:opacity-50" data-testid="confirm-run-btn">
+                        <span x-show="!runStarting">Run</span>
+                        <span x-show="runStarting">Starting...</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    </main>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script>
+    const HIVE_BASE = window.location.origin;
+
+    function teamDetailApp() {
+        return {
+            team: null,
+            runs: [],
+            activeRun: null,
+            loading: true,
+            isNew: false,
+            agents: [],
+            createForm: { name: '', description: '', root_agent_id: '', max_depth: 3, members: [] },
+            creating: false,
+            createError: '',
+            showRunModal: false,
+            runTask: '',
+            runStarting: false,
+            eventSource: null,
+            logs: [],
+            finalOutput: '',
+
+            async init() {
+                if (!isAuthenticated()) {
+                    window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                    return;
+                }
+                const pathParts = window.location.pathname.split('/');
+                const teamId = pathParts[pathParts.length - 1];
+                if (!teamId) { this.loading = false; return; }
+                if (teamId === 'new') {
+                    this.isNew = true;
+                    this.loading = false;
+                    try {
+                        const token = localStorage.getItem('token');
+                        const res = await fetch('/api/agents', { headers: { Authorization: `Bearer ${token}` } });
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.agents = (data.items || data).filter(a => a.status === 'active');
+                            if (this.agents.length > 0) this.createForm.root_agent_id = this.agents[0].id;
+                        }
+                    } catch (e) { console.error('Failed to load agents', e); }
+                    return;
+                }
+
+                try {
+                    const token = localStorage.getItem('token');
+                    const res = await fetch(`/api/teams/${teamId}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (res.ok) {
+                        this.team = await res.json();
+                        try { await this.loadRuns(); } catch (_) {}
+                        if (this.runs.length > 0 && this.runs[0].status === 'running') {
+                            this.selectRun(this.runs[0]);
+                        }
+                    } else {
+                        console.error('Team fetch failed:', res.status);
+                    }
+                } catch (e) {
+                    console.error('Failed to load team', e);
+                }
+                this.loading = false;
+            },
+
+            get orgChart() {
+                if (!this.team?.members) return [];
+                const members = this.team.members;
+                const byReportsTo = {};
+                for (const m of members) {
+                    const key = m.reports_to_member_id || '__root__';
+                    if (!byReportsTo[key]) byReportsTo[key] = [];
+                    byReportsTo[key].push(m);
+                }
+                const result = [];
+                const walk = (parentId, depth) => {
+                    const key = parentId || '__root__';
+                    const children = byReportsTo[key] || [];
+                    for (const child of children) {
+                        result.push({ ...child, depth });
+                        walk(child.id, depth + 1);
+                    }
+                };
+                walk(null, 0);
+                return result;
+            },
+
+            get delegationChain() {
+                if (!this.activeRun?.delegations) return [];
+                const dels = [...this.activeRun.delegations];
+                dels.sort((a, b) => (a.depth || 0) - (b.depth || 0));
+                return dels;
+            },
+
+            async loadRuns() {
+                const token = localStorage.getItem('token');
+                const res = await fetch(`/api/teams/${this.team.id}/runs`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    this.runs = await res.json();
+                }
+            },
+
+            selectRun(run) {
+                this.activeRun = run;
+                this.logs = [];
+                this.finalOutput = run.output_data?.output || '';
+                if (run.status === 'running' || run.status === 'pending') {
+                    this.streamRun(run.id);
+                }
+            },
+
+            async startRun() {
+                if (!this.runTask.trim()) return;
+                this.runStarting = true;
+                this.logs = [];
+                this.finalOutput = '';
+                try {
+                    const token = localStorage.getItem('token');
+                    const res = await fetch(`/api/teams/${this.team.id}/run`, {
+                        method: 'POST',
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ task: this.runTask })
+                    });
+                    if (res.ok) {
+                        const run = await res.json();
+                        this.activeRun = run;
+                        this.runs.unshift(run);
+                        this.showRunModal = false;
+                        this.runTask = '';
+                        this.streamRun(run.id);
+                    }
+                } catch (e) {
+                    console.error('Failed to start run', e);
+                }
+                this.runStarting = false;
+            },
+
+            streamRun(runId) {
+                if (this.eventSource) this.eventSource.close();
+                this.eventSource = new EventSource(`/api/teams/${this.team.id}/runs/${runId}/stream`);
+                this.eventSource.onmessage = (e) => {
+                    try {
+                        const event = JSON.parse(e.data);
+                        const type = event.type;
+                        if (type === 'team_run_started') {
+                            if (this.activeRun?.id === runId) {
+                                this.activeRun.status = event.status || 'running';
+                                this.activeRun.task = event.task;
+                            }
+                        } else if (type === 'status_update') {
+                            if (this.activeRun?.id === runId) {
+                                this.activeRun.status = event.status;
+                            }
+                            const run = this.runs.find(r => r.id === runId);
+                            if (run) run.status = event.status;
+                        } else if (type === 'delegations') {
+                            if (this.activeRun?.id === runId) {
+                                this.activeRun.delegations = event.delegations;
+                            }
+                        } else if (type === 'delegation_tree') {
+                            if (this.activeRun?.id === runId) {
+                                this.activeRun.delegation_tree = event.tree;
+                            }
+                        } else if (type === 'log') {
+                            this.logs.push({
+                                time: new Date().toLocaleTimeString(),
+                                level: event.level || 'info',
+                                agent: event.agent || '',
+                                message: event.message
+                            });
+                        } else if (type === 'output') {
+                            this.finalOutput = event.output?.output || (typeof event.output === 'string' ? event.output : JSON.stringify(event.output));
+                        } else if (type === 'team_run_finished') {
+                            if (this.activeRun?.id === runId) {
+                                this.activeRun.status = event.status;
+                            }
+                            const run = this.runs.find(r => r.id === runId);
+                            if (run) run.status = event.status;
+                            this.eventSource.close();
+                            this.eventSource = null;
+                            // Final fetch to get complete data
+                            this.fetchRun(runId);
+                        } else if (type === 'error') {
+                            this.logs.push({
+                                time: new Date().toLocaleTimeString(),
+                                level: 'error',
+                                agent: '',
+                                message: event.message || 'Unknown error'
+                            });
+                        } else if (type === 'status' || type === 'done') {
+                            if (event.data?.status === 'completed') {
+                                if (this.activeRun?.id === runId) this.activeRun.status = 'completed';
+                                this.eventSource.close();
+                                this.eventSource = null;
+                                this.fetchRun(runId);
+                            }
+                        }
+                    } catch (_) {}
+                };
+                this.eventSource.onerror = () => {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                };
+            },
+
+            async fetchRun(runId) {
+                const token = localStorage.getItem('token');
+                const res = await fetch(`/api/teams/${this.team.id}/runs/${runId}`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const run = await res.json();
+                    this.activeRun = run;
+                    const idx = this.runs.findIndex(r => r.id === runId);
+                    if (idx >= 0) this.runs[idx] = run;
+                    this.finalOutput = run.output_data?.output || '';
+                }
+            },
+
+            async createTeam() {
+                this.creating = true;
+                this.createError = '';
+                try {
+                    const token = localStorage.getItem('token');
+                    const body = {
+                        name: this.createForm.name,
+                        description: this.createForm.description || null,
+                        root_agent_id: this.createForm.root_agent_id,
+                        max_depth: this.createForm.max_depth,
+                        members: this.createForm.members.filter(m => m.agent_id).map(m => ({
+                            agent_id: m.agent_id,
+                            role: m.role,
+                            reports_to_agent_id: m.reports_to_agent_id || null,
+                        })),
+                    };
+                    const res = await fetch('/api/teams/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                        body: JSON.stringify(body),
+                    });
+                    if (res.ok) {
+                        const team = await res.json();
+                        window.location.href = `/teams/${team.id}`;
+                    } else {
+                        const err = await res.json();
+                        this.createError = err.detail || 'Failed to create team';
+                    }
+                } catch (e) {
+                    this.createError = e.message || 'Failed to create team';
+                }
+                this.creating = false;
+            },
+
+            timeAgo(dateStr) {
+                const d = new Date(dateStr);
+                const now = new Date();
+                const diff = Math.floor((now - d) / 1000);
+                if (diff < 60) return 'just now';
+                if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+                if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+                return Math.floor(diff / 86400) + 'd ago';
+            }
+        };
+    }
+    </script>
+</body>
+</html>

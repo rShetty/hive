@@ -33,6 +33,7 @@ from models.user import User
 from models.wallet import Wallet
 from models.transaction import Transaction, TransactionType, TransactionStatus
 from models.delegation_log import DelegationLog
+from models.team import TeamRun, TeamDelegation
 from schemas import (
     DelegationRequest,
     DelegationResponse,
@@ -973,6 +974,39 @@ async def complete_delegation(
 
     await set_delegation_status(delegation_id, "completed")
 
+    # Update TeamDelegation and TeamRun if this is a team root delegation
+    td_result = await db.execute(
+        select(TeamDelegation).where(TeamDelegation.delegation_id == delegation_id)
+    )
+    team_delegation = td_result.scalar_one_or_none()
+    if team_delegation:
+        team_delegation.status = "completed"
+        team_delegation.completed_at = datetime.utcnow()
+        team_delegation.result_data = completion.result
+        await db.commit()
+
+        tr_result = await db.execute(
+            select(TeamRun).where(TeamRun.id == team_delegation.team_run_id)
+        )
+        team_run = tr_result.scalar_one_or_none()
+        if team_run:
+            team_run.status = "completed"
+            team_run.completed_at = datetime.utcnow()
+            child_result = await db.execute(
+                select(TeamDelegation).where(TeamDelegation.team_run_id == team_run.id)
+            )
+            all_del = child_result.scalars().all()
+            tree = {}
+            for d in all_del:
+                tree[d.id] = {
+                    "agent_id": str(d.agent_id),
+                    "parent_id": d.parent_delegation_id,
+                    "status": d.status,
+                    "result": d.result_data,
+                }
+            team_run.delegation_tree = tree
+            await db.commit()
+
     return {
         "success": True,
         "delegation_id": delegation_id,
@@ -1078,6 +1112,41 @@ async def delegation_callback(
     await db.commit()
 
     await set_delegation_status(delegation_id, "completed")
+
+    # Update TeamDelegation and TeamRun if this is a team root delegation
+    td_result = await db.execute(
+        select(TeamDelegation).where(TeamDelegation.delegation_id == delegation_id)
+    )
+    team_delegation = td_result.scalar_one_or_none()
+    if team_delegation:
+        team_delegation.status = "completed"
+        team_delegation.completed_at = datetime.utcnow()
+        team_delegation.result_data = callback_data.result
+        await db.commit()
+
+        # Check if this is the root delegation — if so, mark the run as completed
+        tr_result = await db.execute(
+            select(TeamRun).where(TeamRun.id == team_delegation.team_run_id)
+        )
+        team_run = tr_result.scalar_one_or_none()
+        if team_run:
+            team_run.status = "completed"
+            team_run.completed_at = datetime.utcnow()
+            # Build delegation tree from all child delegations
+            child_result = await db.execute(
+                select(TeamDelegation).where(TeamDelegation.team_run_id == team_run.id)
+            )
+            all_del = child_result.scalars().all()
+            tree = {}
+            for d in all_del:
+                tree[d.id] = {
+                    "agent_id": str(d.agent_id),
+                    "parent_id": d.parent_delegation_id,
+                    "status": d.status,
+                    "result": d.result_data,
+                }
+            team_run.delegation_tree = tree
+            await db.commit()
 
     return {
         "success": True,

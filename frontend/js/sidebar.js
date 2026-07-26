@@ -56,6 +56,8 @@ const SIDEBAR_TREE = [
     icon: 'M13 3L4 14h7l-1 7 9-11h-7z',
     items: [
       { href: '/tasks', label: 'Tasks', key: 'tasks', icon: 'M4 6h16M4 12h16M4 18h10' },
+      { href: '/workflows', label: 'Workflows', key: 'workflows', icon: 'M4 5h16v14H4zM4 9h16M9 5v14' },
+      { href: '/teams', label: 'Teams', key: 'teams', icon: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75' },
     ],
   },
   {

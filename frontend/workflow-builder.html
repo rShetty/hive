@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Workflow Builder — Hive 🐝</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/theme.css">
+    <style>
+        .step-node { transition: all 0.2s ease; }
+        .step-node:hover { box-shadow: 0 4px 12px rgba(79,70,229,0.15); }
+        .agent-chip { transition: all 0.15s ease; }
+        .agent-chip:hover { background: #eef2ff; border-color: #818cf8; transform: translateY(-1px); }
+        .log-entry { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
+        .pulse-dot { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+        .pulse-ring { animation: pulseRing 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+        @keyframes pulseRing { 0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,0.4)} 50%{box-shadow:0 0 0 6px rgba(99,102,241,0)} }
+        .flow-arrow { animation: flowPulse 1.5s ease-in-out infinite; }
+        @keyframes flowPulse { 0%,100%{opacity:0.5} 50%{opacity:1} }
+        .pipeline-node { transition: all 0.3s ease; }
+        .pipeline-node.active { animation: pipelineGlow 2s ease-in-out infinite; }
+        @keyframes pipelineGlow { 0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,0.3)} 50%{box-shadow:0 0 0 8px rgba(99,102,241,0)} }
+        .step-card { transition: all 0.2s ease; }
+        .step-card:hover { border-color: #818cf8; }
+        .step-card.expanded { border-color: #6366f1; }
+        .run-card { transition: all 0.15s ease; }
+        .run-card:hover { border-color: #818cf8; transform: translateY(-1px); }
+        .status-badge { font-size: 0.65rem; padding: 0.125rem 0.5rem; border-radius: 9999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="builderApp()">
+    <div class="app-shell">
+    <div id="sidebar-root"></div>
+    <main class="app-main">
+    <script src="/js/sidebar.js"></script>
+    <script>renderSidebar({ active: 'workflows' });</script>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <!-- Header -->
+        <div class="flex items-start justify-between mb-8 gap-4 flex-wrap">
+            <div class="flex items-center gap-4">
+                <a href="/workflows" class="text-gray-500 hover:text-gray-700">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                </a>
+                <div>
+                    <h1 class="section-title text-2xl" x-text="isNew ? 'New Workflow' : (workflow?.name || 'Loading...')"></h1>
+                    <p class="text-gray-500 text-sm mt-1" x-text="isNew ? 'Create a multi-agent pipeline' : 'Edit workflow steps and configuration'"></p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <template x-if="!isNew">
+                    <div class="flex items-center gap-2">
+                        <select x-model="workflow.status" @change="saveWorkflow()" class="field text-sm py-1.5">
+                            <option value="draft">Draft</option>
+                            <option value="active">Active</option>
+                            <option value="archived">Archived</option>
+                        </select>
+                    </div>
+                </template>
+                <button @click="saveWorkflow()" :disabled="saving" class="btn btn-primary btn-sm">
+                    <span x-show="!saving" x-text="isNew ? 'Create' : 'Save'"></span>
+                    <span x-show="saving">Saving...</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Left: Config + Agent palette -->
+            <div class="lg:col-span-1 space-y-6">
+                <!-- Workflow config -->
+                <div class="card p-5">
+                    <h3 class="text-sm font-semibold text-gray-900 mb-4">Configuration</h3>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="field-label">Name *</label>
+                            <input type="text" x-model="workflow.name" placeholder="My Workflow" class="field text-sm">
+                        </div>
+                        <div>
+                            <label class="field-label">Description</label>
+                            <textarea x-model="workflow.description" rows="2" placeholder="What does this workflow do?" class="field text-sm"></textarea>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="field-label">Max tokens/run</label>
+                                <input type="number" x-model.number="workflow.max_tokens_per_run" min="50" max="5000" class="field text-sm">
+                            </div>
+                            <div>
+                                <label class="field-label">Timeout (s)</label>
+                                <input type="number" x-model.number="workflow.timeout_seconds" min="30" max="3600" class="field text-sm">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Agent palette (Paperclip-style agent cards) -->
+                <div class="card p-5">
+                    <h3 class="text-sm font-semibold text-gray-900 mb-1">Team</h3>
+                    <p class="text-xs text-gray-500 mb-3">Click to add an agent to the pipeline</p>
+                    <div class="space-y-2 max-h-80 overflow-y-auto">
+                        <template x-for="agent in availableAgents" :key="agent.id">
+                            <button @click="addStep(agent)"
+                                    class="agent-chip w-full text-left p-3 border border-gray-200 rounded-xl bg-white">
+                                <div class="flex items-center gap-3">
+                                    <!-- Status dot (Paperclip color-coded) -->
+                                    <div class="relative flex-shrink-0">
+                                        <span class="w-3 h-3 rounded-full block"
+                                              :class="agent.status === 'active' ? 'bg-green-500' : agent.status === 'error' ? 'bg-red-500' : agent.status === 'idle' ? 'bg-yellow-500' : 'bg-gray-400'"></span>
+                                        <span x-show="agent.status === 'active'"
+                                              class="absolute inset-0 w-3 h-3 rounded-full bg-green-500 pulse-ring"></span>
+                                    </div>
+                                    <div class="min-w-0 flex-1">
+                                        <div class="flex items-center gap-2">
+                                            <span class="font-semibold text-sm text-gray-900 truncate" x-text="agent.name"></span>
+                                            <span class="status-badge"
+                                                  :class="agent.status === 'active' ? 'bg-green-100 text-green-700' : agent.status === 'error' ? 'bg-red-100 text-red-700' : agent.status === 'idle' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-500'"
+                                                  x-text="agent.status || 'unknown'"></span>
+                                        </div>
+                                        <div class="text-xs text-gray-500 truncate mt-0.5" x-text="agent.description || agentSkills(agent)"></div>
+                                    </div>
+                                    <span class="text-xs text-gray-400 flex-shrink-0" x-text="agentPricing(agent)"></span>
+                                </div>
+                            </button>
+                        </template>
+                        <div x-show="availableAgents.length === 0" class="text-sm text-gray-400 text-center py-4">
+                            No agents available
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Step builder canvas with delegation flow -->
+            <div class="lg:col-span-2 space-y-4">
+                <!-- Steps canvas with flow visualization -->
+                <div class="card p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-sm font-semibold text-gray-900">Pipeline</h3>
+                            <span class="text-xs text-gray-400" x-text="steps.length + ' step' + (steps.length !== 1 ? 's' : '')"></span>
+                        </div>
+                        <div class="flex items-center gap-2 text-xs text-gray-500">
+                            <span class="w-2 h-2 rounded-full bg-green-500"></span> Active
+                            <span class="w-2 h-2 rounded-full bg-gray-400 ml-2"></span> Idle
+                        </div>
+                    </div>
+
+                    <!-- Empty state -->
+                    <template x-if="steps.length === 0">
+                        <div class="border-2 border-dashed border-gray-200 rounded-xl p-12 text-center">
+                            <div class="text-4xl mb-3">🔗</div>
+                            <p class="text-gray-500 text-sm">Click an agent on the left to build your pipeline</p>
+                            <p class="text-gray-400 text-xs mt-1">Agents execute sequentially, passing output to the next step</p>
+                        </div>
+                    </template>
+
+                    <!-- Steps list with delegation flow -->
+                    <div class="space-y-0">
+                        <template x-for="(step, idx) in steps" :key="step._tempId || step.id">
+                            <div>
+                                <!-- Delegation flow arrow (Paperclip-style) -->
+                                <div x-show="idx > 0" class="flex items-center justify-center py-1">
+                                    <div class="flex flex-col items-center">
+                                        <div class="w-0.5 h-4 bg-gradient-to-b"
+                                             :class="getFlowArrowColor(step, idx)"></div>
+                                        <svg class="w-5 h-5 -my-0.5"
+                                             :class="getFlowArrowColor(step, idx).replace('from-', 'text-')"
+                                             viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z" transform="rotate(90 12 12)"/>
+                                        </svg>
+                                        <div class="w-0.5 h-4 bg-gradient-to-b"
+                                             :class="getFlowArrowColor(step, idx)"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Step card (Paperclip-style agent card) -->
+                                <div class="step-node step-card border border-gray-200 rounded-xl bg-white overflow-hidden"
+                                     :class="{'ring-2 ring-indigo-300 border-indigo-300': editingStep === step._tempId}">
+                                    <div class="p-4">
+                                        <div class="flex items-start gap-3">
+                                            <!-- Step number with status -->
+                                            <div class="relative flex-shrink-0">
+                                                <div class="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm"
+                                                     :class="getStepNumberClass(step, idx)"
+                                                     x-text="idx + 1"></div>
+                                                <div x-show="step.agent_status === 'active'"
+                                                     class="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-green-500 border-2 border-white pulse-ring"></div>
+                                            </div>
+
+                                            <!-- Step content -->
+                                            <div class="flex-1 min-w-0">
+                                                <!-- Step name -->
+                                                <div class="flex items-center gap-2 mb-2">
+                                                    <input type="text" x-model="step.name"
+                                                           class="font-semibold text-gray-900 bg-transparent border-none p-0 focus:ring-0 text-sm w-full"
+                                                           placeholder="Step name">
+                                                </div>
+
+                                                <!-- Agent info card (Paperclip-style) -->
+                                                <div class="flex items-center gap-3 p-3 rounded-lg mb-3"
+                                                     :class="step.agent_status === 'active' ? 'bg-green-50 border border-green-200' : step.agent_status === 'error' ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'">
+                                                    <!-- Agent status dot -->
+                                                    <div class="relative flex-shrink-0">
+                                                        <span class="w-3 h-3 rounded-full block"
+                                                              :class="step.agent_status === 'active' ? 'bg-green-500' : step.agent_status === 'error' ? 'bg-red-500' : 'bg-gray-400'"></span>
+                                                        <span x-show="step.agent_status === 'active'"
+                                                              class="absolute inset-0 w-3 h-3 rounded-full bg-green-500 pulse-ring"></span>
+                                                    </div>
+                                                    <div class="min-w-0 flex-1">
+                                                        <div class="flex items-center gap-2">
+                                                            <span class="text-sm font-semibold text-gray-900" x-text="step.agent_name || getAgentName(step.agent_id)"></span>
+                                                            <span class="status-badge"
+                                                                  :class="step.agent_status === 'active' ? 'bg-green-100 text-green-700' : step.agent_status === 'error' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-500'"
+                                                                  x-text="step.agent_status || 'unknown'"></span>
+                                                        </div>
+                                                        <div class="text-xs text-gray-500 truncate mt-0.5" x-text="step.agent_description || 'No description'"></div>
+                                                        <!-- Skills chips -->
+                                                        <template x-if="step.agent_skills && step.agent_skills.length > 0">
+                                                            <div class="flex flex-wrap gap-1 mt-1.5">
+                                                                <template x-for="skill in step.agent_skills" :key="skill">
+                                                                    <span class="text-[10px] px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded-full font-medium" x-text="skill"></span>
+                                                                </template>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Task template -->
+                                                <div class="mb-3">
+                                                    <label class="text-xs text-gray-500 mb-1 block font-medium">Task prompt</label>
+                                                    <textarea x-model="step.task_template"
+                                                              rows="2"
+                                                              placeholder="What should this agent do? Use {{prev_output}} for previous step results."
+                                                              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-indigo-300 focus:border-indigo-300"></textarea>
+                                                    <p class="text-xs text-gray-400 mt-1">
+                                                        Use <code class="bg-gray-100 px-1 rounded">{{prev_output}}</code> to reference the previous step's output
+                                                    </p>
+                                                </div>
+
+                                                <!-- Step config row -->
+                                                <div class="flex items-center gap-3 text-xs">
+                                                    <div class="flex items-center gap-1">
+                                                        <label class="text-gray-500">Tokens:</label>
+                                                        <input type="number" x-model.number="step.max_tokens"
+                                                               min="10" max="1000"
+                                                               class="w-20 border border-gray-200 rounded px-2 py-1 text-sm focus:ring-1 focus:ring-indigo-300">
+                                                    </div>
+                                                    <div class="flex items-center gap-1">
+                                                        <label class="text-gray-500">Timeout:</label>
+                                                        <input type="number" x-model.number="step.timeout_seconds"
+                                                               min="10" max="600"
+                                                               class="w-20 border border-gray-200 rounded px-2 py-1 text-sm focus:ring-1 focus:ring-indigo-300">
+                                                    </div>
+                                                    <div class="flex-1"></div>
+                                                    <button @click="moveStep(idx, -1)" :disabled="idx === 0"
+                                                            class="text-gray-400 hover:text-gray-600 disabled:opacity-30 p-1">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+                                                    </button>
+                                                    <button @click="moveStep(idx, 1)" :disabled="idx === steps.length - 1"
+                                                            class="text-gray-400 hover:text-gray-600 disabled:opacity-30 p-1">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                                                    </button>
+                                                    <button @click="removeStep(idx)"
+                                                            class="text-red-400 hover:text-red-600 p-1">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Run history (Paperclip-style run cards) -->
+                <template x-if="!isNew && runs.length > 0">
+                    <div class="card p-5">
+                        <h3 class="text-sm font-semibold text-gray-900 mb-4">Recent Runs</h3>
+                        <div class="space-y-2">
+                            <template x-for="run in runs.slice(0, 5)" :key="run.id">
+                                <div @click="streamRun(run)"
+                                     class="run-card flex items-center justify-between p-4 bg-white border border-gray-200 rounded-xl cursor-pointer">
+                                    <div class="flex items-center gap-3">
+                                        <!-- Status icon -->
+                                        <div class="w-8 h-8 rounded-full flex items-center justify-center"
+                                             :class="run.status === 'completed' ? 'bg-green-100' : run.status === 'failed' ? 'bg-red-100' : run.status === 'running' ? 'bg-blue-100' : 'bg-gray-100'">
+                                            <template x-if="run.status === 'completed'">
+                                                <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                            </template>
+                                            <template x-if="run.status === 'failed'">
+                                                <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                            </template>
+                                            <template x-if="run.status === 'running'">
+                                                <div class="w-4 h-4 rounded-full border-2 border-blue-600 border-t-transparent animate-spin"></div>
+                                            </template>
+                                            <template x-if="run.status === 'pending'">
+                                                <div class="w-4 h-4 rounded-full bg-gray-400"></div>
+                                            </template>
+                                        </div>
+                                        <div>
+                                            <div class="flex items-center gap-2">
+                                                <span class="font-medium text-sm text-gray-900" x-text="runStatusText(run.status)"></span>
+                                                <span class="text-xs text-gray-400" x-text="run.id.slice(0, 8)"></span>
+                                            </div>
+                                            <div class="text-xs text-gray-500 mt-0.5" x-text="timeAgo(run.created_at)"></div>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center gap-4">
+                                        <!-- Step progress -->
+                                        <div class="flex items-center gap-1">
+                                            <template x-for="(sr, sIdx) in (run.step_runs || []).slice(0, 5)" :key="sr.id">
+                                                <div class="w-2 h-2 rounded-full"
+                                                     :class="sr.status === 'completed' ? 'bg-green-500' : sr.status === 'failed' ? 'bg-red-500' : sr.status === 'running' ? 'bg-blue-500 pulse-dot' : 'bg-gray-300'"></div>
+                                            </template>
+                                            <span x-show="(run.step_runs || []).length > 5" class="text-[10px] text-gray-400 ml-1" x-text="'+' + ((run.step_runs || []).length - 5)"></span>
+                                        </div>
+                                        <span class="text-xs text-gray-500" x-text="run.total_tokens_used + ' tokens'"></span>
+                                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- Run stream modal (Paperclip-style with pipeline progress + agent cards) -->
+    <div x-show="showStreamModal"
+         x-transition.opacity
+         @keydown.escape.window="showStreamModal = false; closeStream();"
+         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+         style="display:none">
+        <div @click.stop class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+            <!-- Modal header -->
+            <div class="px-6 py-4 border-b flex items-center justify-between flex-shrink-0">
+                <div class="flex items-center gap-3">
+                    <h2 class="text-lg font-semibold text-gray-900">Workflow Run</h2>
+                    <span class="status-badge"
+                          :class="activeRun?.status === 'completed' ? 'bg-green-100 text-green-700' : activeRun?.status === 'failed' ? 'bg-red-100 text-red-700' : activeRun?.status === 'running' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'"
+                          x-text="activeRun?.status"></span>
+                    <span class="text-xs text-gray-400" x-text="activeRun?.id?.slice(0, 8)"></span>
+                </div>
+                <button @click="showStreamModal = false; closeStream();" class="text-gray-400 hover:text-gray-600 p-1">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6 space-y-6">
+                <!-- Pipeline progress bar (Paperclip-style) -->
+                <template x-if="activeRun && activeRun.step_runs && activeRun.step_runs.length > 0">
+                    <div class="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                        <div class="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wider">Pipeline Progress</div>
+                        <div class="flex items-center">
+                            <template x-for="(sr, sIdx) in activeRun.step_runs" :key="sr.id">
+                                <div class="flex items-center">
+                                    <!-- Step node -->
+                                    <div class="pipeline-node flex flex-col items-center">
+                                        <div class="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all"
+                                             :class="sr.status === 'completed' ? 'bg-green-500 border-green-500 text-white' : sr.status === 'failed' ? 'bg-red-500 border-red-500 text-white' : sr.status === 'running' ? 'bg-blue-500 border-blue-500 text-white active pulse-ring' : 'bg-white border-gray-300 text-gray-500'">
+                                            <template x-if="sr.status === 'completed'">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                            </template>
+                                            <template x-if="sr.status === 'failed'">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                            </template>
+                                            <template x-if="sr.status !== 'completed' && sr.status !== 'failed'">
+                                                <span x-text="sIdx + 1"></span>
+                                            </template>
+                                        </div>
+                                        <div class="mt-2 text-center">
+                                            <div class="text-xs font-medium text-gray-900 max-w-[100px] truncate" x-text="sr.agent_name"></div>
+                                            <div class="text-[10px] text-gray-500" x-text="sr.tokens_used + ' tokens'"></div>
+                                        </div>
+                                    </div>
+                                    <!-- Connector line -->
+                                    <div x-show="sIdx < activeRun.step_runs.length - 1"
+                                         class="w-12 h-0.5 mx-2 mt-[-20px]"
+                                         :class="sr.status === 'completed' ? 'bg-green-500' : 'bg-gray-300'"></div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Step detail cards (Paperclip-style) -->
+                <template x-if="activeRun">
+                    <div class="space-y-3">
+                        <template x-for="(sr, sIdx) in activeRun.step_runs" :key="sr.id">
+                            <div class="step-card border rounded-xl overflow-hidden"
+                                 :class="sr.status === 'running' ? 'border-blue-300 bg-blue-50' : sr.status === 'completed' ? 'border-green-200 bg-white' : sr.status === 'failed' ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-white'"
+                                 x-data="{expanded: sr.status === 'running' || sr.status === 'failed'}">
+                                <!-- Step card header -->
+                                <div class="p-4 cursor-pointer" @click="expanded = !expanded">
+                                    <div class="flex items-center gap-3">
+                                        <!-- Step number -->
+                                        <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
+                                             :class="sr.status === 'completed' ? 'bg-green-500 text-white' : sr.status === 'failed' ? 'bg-red-500 text-white' : sr.status === 'running' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-600'">
+                                            <template x-if="sr.status === 'completed'">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                            </template>
+                                            <template x-if="sr.status === 'failed'">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                            </template>
+                                            <template x-if="sr.status !== 'completed' && sr.status !== 'failed'">
+                                                <span x-text="sIdx + 1"></span>
+                                            </template>
+                                        </div>
+                                        <!-- Agent info -->
+                                        <div class="flex-1 min-w-0">
+                                            <div class="flex items-center gap-2">
+                                                <span class="font-semibold text-sm text-gray-900" x-text="sr.agent_name || sr.agent_id"></span>
+                                                <span class="status-badge"
+                                                      :class="sr.status === 'completed' ? 'bg-green-100 text-green-700' : sr.status === 'failed' ? 'bg-red-100 text-red-700' : sr.status === 'running' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'"
+                                                      x-text="sr.status"></span>
+                                            </div>
+                                            <div class="flex items-center gap-3 mt-1 text-xs text-gray-500">
+                                                <span x-text="sr.tokens_used + ' tokens'"></span>
+                                                <template x-if="sr.started_at && sr.completed_at">
+                                                    <span x-text="formatDuration(sr.started_at, sr.completed_at)"></span>
+                                                </template>
+                                            </div>
+                                        </div>
+                                        <!-- Expand icon -->
+                                        <svg class="w-4 h-4 text-gray-400 transition-transform"
+                                             :class="expanded ? 'rotate-180' : ''"
+                                             fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                                    </div>
+                                </div>
+                                <!-- Expanded content -->
+                                <div x-show="expanded" x-collapse>
+                                    <div class="px-4 pb-4 space-y-3 border-t">
+                                        <!-- Input data -->
+                                        <template x-if="sr.input_data && Object.keys(sr.input_data).length > 0">
+                                            <div class="mt-3">
+                                                <div class="text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wider">Input</div>
+                                                <pre class="text-xs text-gray-700 font-mono bg-gray-50 rounded-lg p-3 whitespace-pre-wrap max-h-32 overflow-y-auto border border-gray-200" x-text="formatStepData(sr.input_data)"></pre>
+                                            </div>
+                                        </template>
+                                        <!-- Output data -->
+                                        <template x-if="sr.output_data && Object.keys(sr.output_data).length > 0">
+                                            <div class="mt-3">
+                                                <div class="text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wider">Output</div>
+                                                <pre class="text-xs text-gray-700 font-mono bg-gray-50 rounded-lg p-3 whitespace-pre-wrap max-h-32 overflow-y-auto border border-gray-200" x-text="formatStepData(sr.output_data)"></pre>
+                                            </div>
+                                        </template>
+                                        <!-- Error message -->
+                                        <template x-if="sr.error_message">
+                                            <div class="mt-3">
+                                                <div class="text-xs font-semibold text-red-600 mb-1 uppercase tracking-wider">Error</div>
+                                                <div class="text-xs text-red-700 bg-red-50 rounded-lg p-3 border border-red-200" x-text="sr.error_message"></div>
+                                            </div>
+                                        </template>
+                                        <!-- Timing -->
+                                        <template x-if="sr.started_at">
+                                            <div class="flex items-center gap-4 text-xs text-gray-500 mt-2">
+                                                <span>Started: <span class="text-gray-700" x-text="formatTime(sr.started_at)"></span></span>
+                                                <template x-if="sr.completed_at">
+                                                    <span>Completed: <span class="text-gray-700" x-text="formatTime(sr.completed_at)"></span></span>
+                                                </template>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <!-- Live log output -->
+                <div class="bg-gray-900 rounded-xl p-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Live Output</span>
+                        <div class="flex items-center gap-2">
+                            <div :class="isStreaming ? 'bg-green-500 pulse-dot' : 'bg-gray-500'" class="w-2 h-2 rounded-full"></div>
+                            <span class="text-xs text-gray-500" x-text="isStreaming ? 'Streaming' : 'Idle'"></span>
+                        </div>
+                    </div>
+                    <div class="max-h-64 overflow-y-auto" id="streamLogContainer">
+                        <template x-if="streamLogs.length === 0">
+                            <div class="text-gray-500 text-xs">Waiting for output...</div>
+                        </template>
+                        <template x-for="(entry, idx) in streamLogs" :key="idx">
+                            <div class="log-entry mb-1">
+                                <span class="text-gray-500" x-text="'[' + formatTime(entry.timestamp) + ']'"></span>
+                                <span :class="entry.level === 'error' ? 'text-red-400' : entry.level === 'warning' ? 'text-yellow-400' : 'text-green-400'"
+                                      x-text="'[' + (entry.level || 'info').toUpperCase() + ']'"></span>
+                                <span class="text-gray-300" x-text="entry.message"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script>
+        function builderApp() {
+            return {
+                isNew: true,
+                workflowId: null,
+                workflow: { name: '', description: '', status: 'draft', max_tokens_per_run: 500, timeout_seconds: 600 },
+                steps: [],
+                availableAgents: [],
+                allAgents: [],
+                runs: [],
+                saving: false,
+                editingStep: null,
+
+                // Stream modal
+                showStreamModal: false,
+                activeRun: null,
+                streamLogs: [],
+                isStreaming: false,
+                eventSource: null,
+                _seenTimestamps: new Set(),
+
+                async init() {
+                    if (!isAuthenticated()) {
+                        window.location.href = '/login?next=/workflows/new';
+                        return;
+                    }
+
+                    const params = new URLSearchParams(window.location.search);
+                    const pathParts = window.location.pathname.split('/');
+                    if (pathParts.length >= 3 && pathParts[2] && pathParts[2] !== 'new') {
+                        this.workflowId = pathParts[2];
+                        this.isNew = false;
+                    }
+
+                    const runId = params.get('run');
+                    await this.loadAgents();
+
+                    if (this.workflowId) {
+                        await this.loadWorkflow();
+                        await this.loadRuns();
+                    }
+
+                    if (runId && this.workflowId) {
+                        const run = this.runs.find(r => r.id === runId);
+                        if (run) this.streamRun(run);
+                    }
+                },
+
+                async loadAgents() {
+                    try {
+                        const res = await apiFetch('/api/agents?limit=100');
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.allAgents = data.items || [];
+                            this.availableAgents = this.allAgents;
+                        }
+                    } catch (e) {
+                        console.error('Failed to load agents:', e);
+                    }
+                },
+
+                async loadWorkflow() {
+                    try {
+                        const res = await apiFetch(`/api/workflows/${this.workflowId}`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.workflow = {
+                                name: data.name,
+                                description: data.description,
+                                status: data.status,
+                                max_tokens_per_run: data.max_tokens_per_run,
+                                timeout_seconds: data.timeout_seconds,
+                                auto_retry: data.auto_retry,
+                                max_retries: data.max_retries,
+                            };
+                            this.steps = (data.steps || []).map(s => ({
+                                ...s,
+                                _tempId: s.id,
+                            }));
+                        }
+                    } catch (e) {
+                        console.error('Failed to load workflow:', e);
+                    }
+                },
+
+                async loadRuns() {
+                    try {
+                        const res = await apiFetch(`/api/workflows/${this.workflowId}/runs`);
+                        if (res.ok) {
+                            this.runs = await res.json();
+                        }
+                    } catch (e) {
+                        console.error('Failed to load runs:', e);
+                    }
+                },
+
+                addStep(agent) {
+                    this.steps.push({
+                        _tempId: 'new_' + Date.now(),
+                        agent_id: agent.id,
+                        name: agent.name,
+                        task_template: '',
+                        max_tokens: 100,
+                        timeout_seconds: 300,
+                        step_order: this.steps.length,
+                    });
+                },
+
+                removeStep(idx) {
+                    this.steps.splice(idx, 1);
+                    this.steps.forEach((s, i) => s.step_order = i);
+                },
+
+                moveStep(idx, dir) {
+                    const newIdx = idx + dir;
+                    if (newIdx < 0 || newIdx >= this.steps.length) return;
+                    const temp = this.steps[idx];
+                    this.steps[idx] = this.steps[newIdx];
+                    this.steps[newIdx] = temp;
+                    this.steps.forEach((s, i) => s.step_order = i);
+                },
+
+                getAgentName(agentId) {
+                    const step = this.steps.find(s => s.agent_id === agentId && s.agent_name);
+                    if (step && step.agent_name) return step.agent_name;
+                    const a = this.allAgents.find(a => a.id === agentId);
+                    return a ? a.name : 'Unknown';
+                },
+
+                agentSkills(agent) {
+                    if (!agent.skills || agent.skills.length === 0) return 'No skills';
+                    return agent.skills.slice(0, 3).map(s => s.skill?.display_name || s.display_name || '').filter(Boolean).join(', ');
+                },
+
+                agentPricing(agent) {
+                    const pm = agent.pricing_model;
+                    if (!pm || pm.type === 'free') return 'free';
+                    return (pm.rate || 0) + ' tokens';
+                },
+
+                getFlowArrowColor(step, idx) {
+                    if (step.agent_status === 'active') return 'from-green-400 to-green-500';
+                    if (step.agent_status === 'error') return 'from-red-400 to-red-500';
+                    return 'from-gray-300 to-gray-400';
+                },
+
+                getStepNumberClass(step, idx) {
+                    if (step.agent_status === 'active') return 'bg-green-100 text-green-700 border-2 border-green-300';
+                    if (step.agent_status === 'error') return 'bg-red-100 text-red-700 border-2 border-red-300';
+                    return 'bg-indigo-100 text-indigo-700 border-2 border-indigo-200';
+                },
+
+                async saveWorkflow() {
+                    if (!this.workflow.name.trim()) {
+                        alert('Workflow name is required');
+                        return;
+                    }
+                    if (this.steps.length === 0) {
+                        alert('Add at least one step');
+                        return;
+                    }
+
+                    this.saving = true;
+                    try {
+                        if (this.isNew) {
+                            const payload = {
+                                ...this.workflow,
+                                steps: this.steps.map((s, i) => ({
+                                    agent_id: s.agent_id,
+                                    name: s.name,
+                                    description: s.description || null,
+                                    step_order: i,
+                                    task_template: s.task_template,
+                                    max_tokens: s.max_tokens,
+                                    timeout_seconds: s.timeout_seconds,
+                                    input_mapping: s.input_mapping || null,
+                                    condition: s.condition || null,
+                                })),
+                            };
+                            const res = await apiFetch('/api/workflows', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload),
+                            });
+                            if (res.ok) {
+                                const data = await res.json();
+                                this.workflowId = data.id;
+                                this.isNew = false;
+                                window.history.replaceState({}, '', `/workflows/${data.id}`);
+                            } else {
+                                const err = await res.json().catch(() => ({}));
+                                alert(err.detail || 'Failed to create workflow');
+                            }
+                        } else {
+                            await apiFetch(`/api/workflows/${this.workflowId}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(this.workflow),
+                            });
+
+                            const existingSteps = this.steps.filter(s => !s._tempId?.startsWith('new_'));
+                            for (const s of existingSteps) {
+                                await apiFetch(`/api/workflows/${this.workflowId}/steps/${s.id}`, {
+                                    method: 'DELETE',
+                                });
+                            }
+
+                            for (let i = 0; i < this.steps.length; i++) {
+                                const s = this.steps[i];
+                                await apiFetch(`/api/workflows/${this.workflowId}/steps`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        agent_id: s.agent_id,
+                                        name: s.name,
+                                        description: s.description || null,
+                                        step_order: i,
+                                        task_template: s.task_template,
+                                        max_tokens: s.max_tokens,
+                                        timeout_seconds: s.timeout_seconds,
+                                        input_mapping: s.input_mapping || null,
+                                        condition: s.condition || null,
+                                    }),
+                                });
+                            }
+
+                            await this.loadWorkflow();
+                        }
+                    } catch (e) {
+                        alert('Failed to save: ' + (e.message || e));
+                    } finally {
+                        this.saving = false;
+                    }
+                },
+
+                // ─── Run helpers ────────────────────────────────────────
+                runStatusDot(s) {
+                    const map = { completed: 'bg-green-500', failed: 'bg-red-500', running: 'bg-blue-500 pulse-dot', pending: 'bg-gray-400' };
+                    return map[s] || 'bg-gray-400';
+                },
+
+                runStatusText(s) {
+                    const map = { completed: 'Completed', failed: 'Failed', running: 'Running', pending: 'Pending' };
+                    return map[s] || s;
+                },
+
+                stepStatusDot(s) {
+                    const map = { completed: 'bg-green-500', failed: 'bg-red-500', running: 'bg-blue-500 pulse-dot', pending: 'bg-gray-300', skipped: 'bg-yellow-400' };
+                    return map[s] || 'bg-gray-300';
+                },
+
+                timeAgo(iso) {
+                    if (!iso) return '';
+                    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+                    if (diff < 60) return 'just now';
+                    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+                    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+                    return Math.floor(diff / 86400) + 'd ago';
+                },
+
+                formatTime(iso) {
+                    if (!iso) return '--:--:--';
+                    return new Date(iso).toLocaleTimeString();
+                },
+
+                formatDuration(start, end) {
+                    if (!start || !end) return '';
+                    const ms = new Date(end).getTime() - new Date(start).getTime();
+                    if (ms < 1000) return ms + 'ms';
+                    if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+                    return Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's';
+                },
+
+                formatStepData(data) {
+                    if (!data) return '';
+                    if (typeof data === 'string') return data;
+                    try {
+                        const result = data.result || data.output || data;
+                        if (typeof result === 'string') return result;
+                        return JSON.stringify(result, null, 2);
+                    } catch {
+                        return JSON.stringify(data, null, 2);
+                    }
+                },
+
+                async streamRun(run) {
+                    this.activeRun = run;
+                    this.streamLogs = [];
+                    this._seenTimestamps = new Set();
+                    this.showStreamModal = true;
+
+                    if (run.status === 'completed' || run.status === 'failed') {
+                        this.isStreaming = false;
+                        return;
+                    }
+
+                    this.isStreaming = true;
+                    const token = getToken();
+                    const url = `/api/workflows/${this.workflowId}/runs/${run.id}/stream?token=${encodeURIComponent(token)}`;
+                    this.eventSource = new EventSource(url);
+
+                    this.eventSource.onmessage = (ev) => {
+                        try {
+                            const payload = JSON.parse(ev.data);
+                            if (payload.type === 'log') {
+                                const entry = payload.data || {};
+                                if (entry.timestamp && this._seenTimestamps.has(entry.timestamp)) return;
+                                if (entry.timestamp) this._seenTimestamps.add(entry.timestamp);
+                                this.streamLogs.push(entry);
+                                this.$nextTick(() => {
+                                    const c = document.getElementById('streamLogContainer');
+                                    if (c) c.scrollTop = c.scrollHeight;
+                                });
+                            } else if (payload.type === 'status') {
+                                if (this.activeRun) this.activeRun.status = payload.data?.status;
+                            } else if (payload.type === 'step_update') {
+                                if (this.activeRun && payload.data) {
+                                    const idx = this.activeRun.step_runs.findIndex(sr => sr.id === payload.data.id);
+                                    if (idx >= 0) {
+                                        Object.assign(this.activeRun.step_runs[idx], payload.data);
+                                    }
+                                }
+                            } else if (payload.type === 'done') {
+                                this.closeStream();
+                                this.loadRuns();
+                            }
+                        } catch (e) { console.error('sse parse', e); }
+                    };
+
+                    this.eventSource.onerror = () => {
+                        this.isStreaming = false;
+                        this.closeStream();
+                    };
+                },
+
+                closeStream() {
+                    if (this.eventSource) {
+                        this.eventSource.close();
+                        this.eventSource = null;
+                    }
+                    this.isStreaming = false;
+                },
+            };
+        }
+    </script>
+    </main>
+    </div>
+</body>
+</html>

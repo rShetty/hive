@@ -48,7 +48,8 @@ class AgentClient:
         max_tokens: float,
         callback_url: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        sync: bool = False,
     ) -> Dict[str, Any]:
         """
         Send a delegation task to a target agent.
@@ -79,7 +80,8 @@ class AgentClient:
             "max_tokens": max_tokens,
             "context": context or {},
             "callback_url": callback_url or f"{self.marketplace_url}/api/delegate/{delegation_id}/callback",
-            "requested_at": datetime.utcnow().isoformat()
+            "requested_at": datetime.utcnow().isoformat(),
+            "sync": sync,
         }
         
         # Ensure endpoint has /delegate path if not already specified.
@@ -99,10 +101,7 @@ class AgentClient:
         # against the local Hive instance so aiohttp gets an absolute URL.
         if target_endpoint.startswith("/"):
             if os.getenv("OPENCLAW_DEPLOY_MODE", "local") == "local":
-                from urllib.parse import urlparse
-                _configured = os.getenv("HIVE_URL") or ""
-                _port = f":{urlparse(_configured).port}" if urlparse(_configured).port else ""
-                _base = f"http://localhost{_port}" if _port else "http://localhost:8000"
+                _base = self.marketplace_url
             else:
                 _base = self.marketplace_url
             target_endpoint = _base.rstrip("/") + target_endpoint

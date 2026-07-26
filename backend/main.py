@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from database import init_db
-from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config, mcp, mcp_oauth
+from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config, mcp, mcp_oauth, workflows, teams
 from services.skill_catalog import seed_skills
 from middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from middleware.monitoring import MonitoringMiddleware, metrics
@@ -119,6 +119,8 @@ app.include_router(wallet.router)
 app.include_router(delegation.router)
 app.include_router(reviews.router)
 app.include_router(agent_config.router)
+app.include_router(workflows.router)
+app.include_router(teams.router)
 
 
 @app.get("/api/health")
@@ -286,6 +288,31 @@ async def settings_page():
 @app.get("/tasks")
 async def tasks_page():
     return _serve_frontend("tasks.html")
+
+
+@app.get("/workflows")
+async def workflows_page():
+    return _serve_frontend("workflows.html")
+
+
+@app.get("/workflows/new")
+async def workflow_new_page():
+    return _serve_frontend("workflow-builder.html")
+
+
+@app.get("/workflows/{workflow_id}")
+async def workflow_detail_page(workflow_id: str):
+    return _serve_frontend("workflow-builder.html")
+
+
+@app.get("/teams")
+async def teams_page():
+    return _serve_frontend("teams.html")
+
+
+@app.get("/teams/{team_id}")
+async def team_detail_page(team_id: str):
+    return _serve_frontend("team-detail.html")
 
 
 @app.get("/delegate")
@@ -580,7 +607,10 @@ async def proxy_to_agent(agent_id: str, path: str, request: Request):
             raise HTTPException(status_code=404, detail="Agent not found")
         
         if agent.status not in ["active", "idle"]:
-            raise HTTPException(status_code=503, detail="Agent not available")
+            # Allow internal delegation calls (from workflow engine / agent client)
+            is_internal = request.headers.get("User-Agent", "").startswith("Hive-Marketplace")
+            if not is_internal:
+                raise HTTPException(status_code=503, detail="Agent not available")
         
         # Build target URL
         internal_port = agent.internal_port

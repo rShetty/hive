@@ -41,6 +41,19 @@ Read these when you need to change or extend a specific component.
 
 ---
 
+## Historical / reference documents
+
+Older top-level docs, reorganized into `docs/` for discoverability. These are **historical** (pre-date the HLD/LLD set above) and may describe earlier states of the codebase — treat as background, not current truth. The HLD/LLD set is authoritative.
+
+| Folder | Docs | Topic |
+|--------|------|-------|
+| [`deployment/`](deployment/) | `DEPLOY.md`, `DEPLOYMENT.md`, `DNS_SETUP.md`, `vps-setup-guide.md` | Deploy steps, DNS, VPS/Omnigent setup |
+| [`architecture/`](architecture/) | `DELEGATION_PROTOCOL.md`, `END_TO_END_FLOW.md` | Delegation protocol spec, E2E user journey |
+| [`planning/`](planning/) | `IMPLEMENTATION_PLAN.md`, `MARKETPLACE_IMPLEMENTATION.md`, `PRODUCTION_FEATURES.md` | Original implementation plan, marketplace feature build, production feature list |
+| [`security/`](security/) | `SECURITY_REVIEW.md` | Past security review |
+
+---
+
 ## How to navigate
 
 - **New to the codebase?** Read the HLD in order (01 → 07), then the LLD for whichever component you're touching.

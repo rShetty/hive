@@ -83,6 +83,6 @@ Jobs:
 
 - `setup-script.sh` — VPS bootstrap: apt update, install python3/node 22/tmux/curl, install OpenCode + Omnigent, configure UFW for port 4096.
 - `connect-vps.sh` — local SSH helper (hardcoded `187.127.140.125`, port 4096) with optional port-forwarding.
-- `vps-setup-guide.md` — step-by-step VPS + MiMo model setup guide.
+- `docs/deployment/vps-setup-guide.md` — step-by-step VPS + MiMo model setup guide.
 
 These are **developer tooling** for the OpenCode/Omnigent workflow on the VPS, not part of the Hive production deploy.

@@ -981,7 +981,7 @@ async def stream_team_run_events(team_run_id: str, team: Team, db: AsyncSession)
         tx_id = root_td.delegation_id
 
     def _emit(event_dict):
-        return f"data: {json.dumps(event_dict)}\n\n"
+        return f"data: {json.dumps(event_dict, default=str)}\n\n"
 
     # 1. Emit initial state
     yield _emit({"type": "team_run_started", "team_run_id": team_run_id, "status": run.status, "task": run.task, "team_name": team.name})

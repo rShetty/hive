@@ -3,6 +3,7 @@ name: Deploy to VPS
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,12 +15,13 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          command_timeout: 30m
           script: |
             set -e
 
-            REPO_DIR="$HOME/hive"
+            REPO_DIR="/opt/hive"
 
-            # Clone if first deploy, otherwise pull
             if [ ! -d "$REPO_DIR" ]; then
               git clone https://github.com/rShetty/hive.git "$REPO_DIR"
             fi
@@ -28,18 +30,38 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Write env file from secrets
+            # Write env file from secrets (preserves all config)
             cat > .env << EOF
             ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
+            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+            HIVE_URL_OVERRIDE=https://hive.rajeev.me
+            ALLOWED_ORIGINS_OVERRIDE=https://hive.rajeev.me
+            HIVE_DOMAIN=hive.rajeev.me
+            HIVE_SSL_CERT=/etc/letsencrypt/live/hive.rajeev.me/fullchain.pem
+            HIVE_SSL_KEY=/etc/letsencrypt/live/hive.rajeev.me/privkey.pem
+            COOKIE_SECURE=1
             EOF
 
             # Build agent image
             docker build -t agent-marketplace-agent:latest -f docker/Dockerfile.agent docker/ || true
 
-            # Deploy
+            # Rebuild and restart the marketplace container
+            docker compose -f docker-compose.prod.yml down
             docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 
-            # Wait and verify health
-            sleep 5
-            curl -sf http://localhost:8081/api/health || echo "WARNING: Health check failed"
+            # Wait for startup and verify health
+            sleep 10
+            for i in 1 2 3 4 5; do
+              if curl -sf http://localhost:8080/api/health; then
+                echo ""
+                echo "DEPLOY SUCCESS: hive.rajeev.me is healthy"
+                exit 0
+              fi
+              echo "Health check attempt $i failed, waiting..."
+              sleep 5
+            done
+
+            echo "ERROR: Health check failed after 5 attempts"
+            docker compose -f docker-compose.prod.yml logs --tail=50
+            exit 1

@@ -24,6 +24,23 @@ from auth import get_current_active_user
 from models.user import User
 from middleware.rate_limit import limiter, RATE_LIMITS
 from services import delegation_hub
+
+
+async def _check_agent_alive(agent: Agent) -> bool:
+    """Quick health check: ping the agent's /health endpoint."""
+    if not agent.endpoint_url:
+        return False
+    try:
+        endpoint = agent.endpoint_url
+        if endpoint.startswith("/"):
+            base_url = MARKETPLACE_URL
+            endpoint = f"{base_url}{endpoint}"
+        health_url = endpoint.replace("/invoke", "/health")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{health_url}?token=quick")
+            return resp.status_code == 200
+    except Exception:
+        return False
 from services.agent_client import get_agent_client
 from routers.delegation import delegation_status, delegation_logs, add_delegation_log
 
@@ -181,6 +198,8 @@ async def create_team(
     root_agent = result.scalar_one_or_none()
     if not root_agent:
         raise HTTPException(status_code=404, detail="Root agent not found or not owned by you")
+    if root_agent.status != AgentStatus.ACTIVE.value:
+        raise HTTPException(status_code=400, detail=f"Root agent '{root_agent.name}' is {root_agent.status}. Deploy or restart the agent before creating a team.")
 
     team = Team(
         name=data.name,
@@ -376,6 +395,32 @@ def _build_team_context(team: Team, members: list, db_agents: dict) -> dict:
     }
 
 
+async def _fail_team_run(team_run_id: str, delegation_id: str, error_msg: str):
+    """Mark a team run and its root delegation as failed with a clear message."""
+    from datetime import datetime as _dt
+    from database import async_session_maker
+    async with async_session_maker() as db:
+        td_result = await db.execute(
+            select(TeamDelegation).where(TeamDelegation.delegation_id == delegation_id)
+        )
+        td = td_result.scalar_one_or_none()
+        if td:
+            td.status = "failed"
+            td.error_message = error_msg[:500]
+        run_result = await db.execute(select(TeamRun).where(TeamRun.id == team_run_id))
+        run = run_result.scalar_one_or_none()
+        if run:
+            run.status = "failed"
+            run.error_message = error_msg
+            run.completed_at = _dt.utcnow()
+        await db.commit()
+    await add_delegation_log(delegation_id, "error", error_msg)
+    delegation_hub.publish(delegation_id, {
+        "type": "status",
+        "data": {"status": "failed", "error": error_msg},
+    })
+
+
 async def _run_team_delegation(
     team_run_id: str,
     root_delegation_id: str,
@@ -414,6 +459,20 @@ async def _run_team_delegation(
         root_agent = root_agent_result.scalar_one_or_none()
         root_wallet_result = await db.execute(select(Wallet).where(Wallet.user_id == root_agent.owner_id))
         root_wallet = root_wallet_result.scalar_one_or_none()
+
+    if not root_agent:
+        await _fail_team_run(team_run_id, root_delegation_id, "Root agent not found in database")
+        return
+
+    # Verify root agent is alive before proceeding
+    is_alive = await _check_agent_alive(root_agent)
+    if not is_alive:
+        await _fail_team_run(
+            team_run_id, root_delegation_id,
+            f"Agent '{root_agent.name}' is not responding. The agent container may have crashed. "
+            f"Please redeploy or restart the agent from the agent detail page."
+        )
+        return
 
     try:
         client = get_agent_client(timeout=AGENT_DELEGATION_TIMEOUT)
@@ -738,6 +797,11 @@ async def _run_team_delegation(
     except Exception as exc:
         import traceback
         _err = traceback.format_exc()
+        error_msg = str(exc)
+        if "502" in error_msg or "Bad Gateway" in error_msg:
+            error_msg = f"Agent '{target_agent_name}' is not responding (502 Bad Gateway). The agent container may have crashed. Please redeploy the agent."
+        elif "Connection refused" in error_msg or "Failed to connect" in error_msg:
+            error_msg = f"Cannot connect to agent '{target_agent_name}'. The agent is offline. Please redeploy or restart it."
         async with async_session_maker() as db:
             td_result = await db.execute(select(TeamDelegation).where(TeamDelegation.delegation_id == root_delegation_id))
             td = td_result.scalar_one_or_none()
@@ -748,10 +812,10 @@ async def _run_team_delegation(
             run = run_result.scalar_one_or_none()
             if run:
                 run.status = "failed"
-                run.error_message = f"Team delegation failed: {exc}"
+                run.error_message = f"Team delegation failed: {error_msg}"
                 run.completed_at = _dt.utcnow()
             await db.commit()
-            await add_delegation_log(root_delegation_id, "error", f"Team delegation failed: {exc}")
+            await add_delegation_log(root_delegation_id, "error", f"Team delegation failed: {error_msg}")
 
 
 @router.post("/{team_id}/run", response_model=TeamRunResponse)
@@ -774,7 +838,7 @@ async def start_team_run(
     if not root_agent:
         raise HTTPException(status_code=500, detail="Root agent not found")
     if root_agent.status not in [AgentStatus.ACTIVE.value, AgentStatus.IDLE.value]:
-        raise HTTPException(status_code=503, detail=f"Root agent is {root_agent.status}")
+        raise HTTPException(status_code=503, detail=f"Root agent '{root_agent.name}' is {root_agent.status}. Please redeploy the agent or restart it from the agent detail page.")
 
     result = await db.execute(
         select(TeamMember).where(TeamMember.team_id == team.id).options(selectinload(TeamMember.agent))
@@ -783,12 +847,19 @@ async def start_team_run(
     all_agent_ids = {team.root_agent_id} | {m.agent_id for m in members}
     agents = await _load_agents_map(db, list(all_agent_ids))
 
+    dead_agents = []
     for m in members:
         if m.agent_id not in agents:
             continue
         agent = agents[m.agent_id]
         if agent.status not in [AgentStatus.ACTIVE.value, AgentStatus.IDLE.value]:
-            raise HTTPException(status_code=503, detail=f"Agent {agent.name} is {agent.status}")
+            dead_agents.append(f"{agent.name} ({agent.status})")
+
+    if dead_agents:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot start team run — agents are offline: {', '.join(dead_agents)}. Please redeploy or restart them first."
+        )
 
     user_wallet = await get_or_create_wallet(current_user.id, db)
     root_wallet = await get_or_create_wallet(root_agent.owner_id, db)

@@ -55,6 +55,23 @@
         </div>
     </div>
 
+    <!-- Agent Health Warning -->
+    <template x-if="deadAgents.length > 0">
+        <div class="bg-red-50 border-b border-red-200">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+                <div class="flex items-center gap-3">
+                    <svg class="w-5 h-5 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                    <div class="text-sm">
+                        <span class="font-medium text-red-700" x-text="deadAgents.length + ' agent(s) offline:'"></span>
+                        <template x-for="a in deadAgents" :key="a.id">
+                            <a :href="`/agent-detail?id=${a.id}`" class="ml-2 text-red-600 hover:underline" x-text="a.name"></a>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
     <!-- Featured Agents -->
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
         <div class="flex justify-between items-center mb-8">
@@ -138,6 +155,7 @@
                 isAuthenticated: false,
                 stats: { total_agents: 0, active_agents: 0, total_skills: 0 },
                 featuredAgents: [],
+                deadAgents: [],
 
                 init() {
                     this.checkAuth();
@@ -179,7 +197,9 @@
                         const res = await fetch('/api/agents?limit=6');
                         if (res.ok) {
                             const data = await res.json();
-                            this.featuredAgents = data.items || [];
+                            const agents = data.items || [];
+                            this.featuredAgents = agents;
+                            this.deadAgents = agents.filter(a => a.status === 'error' || a.status === 'offline');
                         }
                     } catch (e) {
                         console.error('Failed to load agents:', e);

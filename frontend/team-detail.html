@@ -99,10 +99,11 @@
                             <label class="block text-sm font-medium text-gray-700 mb-1">Root Agent</label>
                             <select x-model="createForm.root_agent_id" class="field w-full">
                                 <template x-for="agent in agents" :key="agent.id">
-                                    <option :value="agent.id" x-text="agent.name"></option>
+                                    <option :value="agent.id" x-text="agent.name + (agent.status === 'active' ? '' : ' (offline)')" :disabled="agent.status !== 'active'"></option>
                                 </template>
                             </select>
                             <p x-show="agents.length === 0" class="text-sm text-amber-600 mt-1">No active agents found. Deploy an agent first.</p>
+                            <p x-show="agents.length > 0 && !createForm.root_agent_id" class="text-sm text-amber-600 mt-1">Select an active agent to be the root.</p>
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Max Depth</label>
@@ -257,6 +258,14 @@
                                 <div class="text-xs text-gray-400 mb-4">
                                     Started <span x-text="activeRun.started_at ? timeAgo(activeRun.started_at) : '—'"></span>
                                 </div>
+
+                                <!-- Error message -->
+                                <template x-if="activeRun.status === 'failed' && activeRun.error_message">
+                                    <div class="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                                        <div class="text-sm font-medium text-red-700 mb-1">Error</div>
+                                        <div class="text-sm text-red-600" x-text="activeRun.error_message"></div>
+                                    </div>
+                                </template>
 
                                 <!-- Result output -->
                                 <template x-if="finalOutput">

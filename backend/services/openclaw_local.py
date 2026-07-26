@@ -89,7 +89,9 @@ def spawn_openclaw_agent(
             _port = f":{_p.port}" if _p.port else ""
             hive_url = f"http://localhost{_port}"
         else:
-            hive_url = "http://localhost:8000"
+            # Detect the port from the PORT env var (set by Docker/unix)
+            _port = os.getenv("PORT", "8000")
+            hive_url = f"http://localhost:{_port}"
 
     # Forward any user-provided LLM credentials so the agent can make real
     # model calls. OPENROUTER_API_KEY (+ optional OPENROUTER_MODEL) is the
@@ -305,3 +307,108 @@ def cleanup_all() -> None:
         ids = list(_RUNNERS.keys())
     for aid in ids:
         stop_openclaw_agent(aid)
+
+
+def _restart_agent(agent_id: str, db_session) -> bool:
+    """Restart a single agent subprocess using its persisted config."""
+    from sqlalchemy import select
+    from models.agent import Agent, AgentStatus
+    from services.crypto import decrypt_json
+    from auth import get_password_hash
+    import secrets as _secrets
+
+    result = db_session.execute(select(Agent).where(Agent.id == agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        return False
+
+    stop_openclaw_agent(agent_id)
+
+    cfg = decrypt_json(agent.config_encrypted) or {}
+    _KEY_ENV_MAP = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "google": "GOOGLE_API_KEY",
+    }
+
+    def _flat_keys(model_key):
+        if not isinstance(model_key, dict):
+            return {}
+        if "provider" in model_key and "key" in model_key:
+            return {str(model_key["provider"]): model_key["key"]}
+        return {str(k): v for k, v in model_key.items()}
+
+    model_key = _flat_keys(cfg.get("model_key"))
+    env_vars = {}
+    for prov, val in model_key.items():
+        env = _KEY_ENV_MAP.get(str(prov).lower())
+        if env and val:
+            env_vars[env] = str(val)
+
+    _model = (cfg.get("model_key") or {}).get("model") or cfg.get("model")
+    if _model and "OPENROUTER" in (model_key or {}):
+        env_vars.setdefault("OPENROUTER_MODEL", str(_model))
+
+    mcp_servers = cfg.get("mcp_servers") or []
+    if mcp_servers:
+        env_vars["MCP_SERVERS"] = json.dumps(mcp_servers)
+
+    api_key = f"am-{_secrets.token_urlsafe(32)}"
+    agent.api_key_hash = get_password_hash(api_key)
+    agent.api_key_prefix = api_key[:16]
+
+    port = agent.internal_port or 0
+    try:
+        container_id = spawn_openclaw_agent(
+            agent_id=agent.id,
+            agent_name=agent.name,
+            port=port,
+            api_key=api_key,
+            skills=[],
+            env_vars=env_vars,
+            framework=cfg.get("framework", "openclaw"),
+        )
+        agent.container_id = container_id
+        agent.status = AgentStatus.ACTIVE.value
+        db_session.commit()
+        import logging
+        logging.getLogger(__name__).info("Watchdog restarted agent %s", agent.id)
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("Watchdog restart failed for %s: %s", agent.id, e)
+        agent.status = AgentStatus.ERROR.value
+        db_session.commit()
+        return False
+
+
+async def watchdog_agents():
+    """Periodically check agent subprocess health and restart dead ones."""
+    import asyncio
+    import logging
+    from database import async_session_maker
+    from sqlalchemy import select
+    from models.agent import Agent, AgentStatus
+
+    log = logging.getLogger(__name__)
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with async_session_maker() as db:
+                result = await db.execute(
+                    select(Agent).where(
+                        Agent.container_id.like("proc-openclaw-%"),
+                        Agent.status == AgentStatus.ACTIVE.value,
+                    )
+                )
+                agents = result.scalars().all()
+
+                for agent in agents:
+                    with _RUNNERS_LOCK:
+                        proc = _RUNNERS.get(agent.id)
+                    if proc is None or proc.poll() is not None:
+                        log.warning("Watchdog: agent %s (%s) process is dead, restarting...", agent.id, agent.name)
+                        await db.run_sync(lambda session: _restart_agent(agent.id, session))
+        except Exception as e:
+            log.error("Watchdog error: %s", e)

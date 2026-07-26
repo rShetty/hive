@@ -40,11 +40,14 @@ async def lifespan(app: FastAPI):
     # Re-spawn managed agents that run as local subprocesses (they die when
     # Hive restarts and must be brought back using their persisted config).
     try:
-        from services.openclaw_local import rehydrate_local_agents
+        from services.openclaw_local import rehydrate_local_agents, watchdog_agents
         async with async_session_maker() as session:
             n = await rehydrate_local_agents(session)
             if n:
                 print(f"🔄 Rehydrated {n} local agent(s)")
+        # Start the watchdog (runs every 60s, restarts dead agents)
+        asyncio.create_task(watchdog_agents())
+        print("🐕 Agent watchdog started")
     except Exception as e:  # noqa: BLE001
         print(f"⚠️  Agent rehydrate skipped: {e}")
 

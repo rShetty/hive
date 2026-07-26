@@ -190,6 +190,7 @@ jobs:
             ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+            HIVE_URL=http://localhost:8080
             HIVE_URL_OVERRIDE=https://hive.rajeev.me
             ALLOWED_ORIGINS_OVERRIDE=https://hive.rajeev.me
             HIVE_DOMAIN=hive.rajeev.me

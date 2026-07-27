@@ -1,0 +1,33 @@
+title = "hive gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow documentation placeholders, test fixtures, and historical commits containing non-secret examples."
+
+paths = [
+  '''docs/.*\.md''',
+  '''END_TO_END_FLOW\.md''',
+  '''MARKETPLACE_IMPLEMENTATION\.md''',
+  '''tests/.*\.py''',
+]
+
+regexes = [
+  '''sk-or-v1-test-placeholder''',
+  '''your-api-key''',
+  '''YOUR_AGENT_API_KEY''',
+  '''YOUR_JWT_TOKEN''',
+  '''AGENT_A_KEY''',
+  '''CODEBOT_KEY''',
+  '''ALICE_JWT''',
+  '''EXECUTING_AGENT_API_KEY''',
+  '''eyJ0eXAiOiJKV1QiLCJhbGci\.\.\.''',
+  '''\*\*\*;3;m''',
+]
+
+commits = [
+  "4c2d4c48f8b11dcad4692ba3f1042b0462c27a8b",
+  "87dc5276f1603499168baedfab495743195c5338",
+  "479ef294764bc94d0132c113bc4e48448b5e3f64",
+]

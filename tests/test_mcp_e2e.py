@@ -373,7 +373,7 @@ def run_tests():
             "skill_names": ["terminal", "web_extract"],
             "model_key": {
                 "provider": "openrouter",
-                "key": os.getenv("OPENROUTER_API_KEY", "sk-or-v1-test-placeholder"),
+                "key": os.getenv("OPENROUTER_API_KEY", ""),
                 "model": "openai/gpt-4o-mini",
             },
         })

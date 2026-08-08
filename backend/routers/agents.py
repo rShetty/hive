@@ -10,7 +10,7 @@ from models.agent import Agent, AgentStatus
 from models.skill import Skill
 from models.agent_skill import AgentSkill
 from schemas import AgentResponse, AgentDetailResponse, AgentFilter
-from auth import get_current_active_user, get_current_user
+from auth import get_current_active_user, get_current_user, get_current_admin_user
 from models.user import User
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -205,6 +205,8 @@ async def get_agent_card(agent_id: str, db: AsyncSession = Depends(get_db)):
         "description": agent.description or agent.marketplace_description or "",
         "url": agent_base_url,
         "version": agent.version or "1.0.0",
+        # W3C DID — portable, resolvable agent identity
+        "id": f"did:hive:{agent.id}",
         # Authentication — Hive-mediated access (dashboard proxy, delegation
         # API) uses Bearer JWTs; agents self-identify to the marketplace via an
         # X-API-Key header. Both schemes are advertised so A2A clients can pick.
@@ -223,6 +225,7 @@ async def get_agent_card(agent_id: str, db: AsyncSession = Depends(get_db)):
         # Hive-specific extensions
         "x-hive": {
             "agent_id": agent.id,
+            "did": f"did:hive:{agent.id}",
             "slug": agent.slug,
             "avatar_url": agent.avatar_url,
             "tags": agent.tags or [],
@@ -239,6 +242,57 @@ async def get_agent_card(agent_id: str, db: AsyncSession = Depends(get_db)):
     }
 
     return card
+
+
+@router.get("/{agent_id}/credentials")
+async def get_agent_credentials(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return W3C Verifiable Credentials for this agent.
+
+    Hive, as the platform authority, issues VCs attesting to:
+      - Ownership (who owns this agent)
+      - Agent metadata (type, capabilities, status)
+      - Marketplace listing (public visibility + pricing)
+
+    The credentials are signed with Hive's platform Ed25519 key and can be
+    verified by any third party using the public key at
+    ``/.well-known/hive-identity``.
+    """
+    result = await db.execute(
+        select(Agent)
+        .options(selectinload(Agent.skills).selectinload(AgentSkill.skill))
+        .where(Agent.id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    from services.credentials import issue_all_credentials
+    creds = await issue_all_credentials(agent, db)
+    return {
+        "agent_id": agent_id,
+        "did": f"did:hive:{agent_id}",
+        "credentials": creds,
+    }
+
+
+@router.get("/{agent_id}/did-document")
+async def get_agent_did_document(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the W3C DID Document for this agent.
+
+    Shortcut for ``GET /.well-known/did/did:hive:{agent_id}``.
+    """
+    from services.did import resolve_did
+    did = f"did:hive:{agent_id}"
+    doc = await resolve_did(did, db)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return doc
 
 
 @router.post("/{agent_id}/discover-skills")
@@ -281,4 +335,43 @@ async def trigger_skill_discovery(
         "agent_id": agent.id,
         "agent_name": agent.name,
         **discovery_result
+    }
+
+
+# ── Admin: HMAC → Ed25519 migration status ──────────────────────────────────
+
+@router.get("/admin/migration-status")
+async def get_migration_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Admin: check how many agents still need Ed25519 key migration.
+
+    Agents with ``signing_key_id = NULL`` were registered before the
+    Ed25519 identity system and still rely on the legacy shared HMAC for
+    callback signing. Use the migration tool (``services/migrate_keys.py``)
+    to issue them keypairs.
+    """
+    total_result = await db.execute(select(func.count(Agent.id)))
+    total = total_result.scalar()
+
+    legacy_result = await db.execute(
+        select(func.count(Agent.id)).where(Agent.signing_key_id.is_(None))
+    )
+    legacy = legacy_result.scalar()
+
+    migrated = (total or 0) - (legacy or 0)
+    pct = (migrated / total * 100) if total else 100
+
+    return {
+        "total_agents": total,
+        "migrated": migrated,
+        "legacy_hmac_only": legacy,
+        "migration_percentage": round(pct, 1),
+        "can_deprecate_hmac": legacy == 0,
+        "message": (
+            "All agents have Ed25519 keys. HIVE_SIGNING_SECRET can be deprecated."
+            if legacy == 0
+            else f"{legacy} agent(s) still rely on legacy HMAC. Run the migration tool."
+        ),
     }

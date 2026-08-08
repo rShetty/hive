@@ -187,10 +187,28 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Write env file from secrets (preserves all config)
+            # Load persisted secrets from the server's .env (if it exists)
+            # so we don't lose HIVE_SIGNING_SECRET between deploys.
+            EXISTING_HIVE_SIGNING_SECRET=""
+            if [ -f .env ]; then
+              EXISTING_HIVE_SIGNING_SECRET=$(grep -E '^HIVE_SIGNING_SECRET=' .env 2>/dev/null | cut -d'=' -f2- || true)
+            fi
+
+            # Generate HIVE_SIGNING_SECRET if not already persisted and not
+            # provided via GitHub secrets.
+            if [ -z "$EXISTING_HIVE_SIGNING_SECRET" ]; then
+              EXISTING_HIVE_SIGNING_SECRET="${{ secrets.HIVE_SIGNING_SECRET }}"
+              if [ -z "$EXISTING_HIVE_SIGNING_SECRET" ]; then
+                echo "Generating new HIVE_SIGNING_SECRET (first deploy)..."
+                EXISTING_HIVE_SIGNING_SECRET=$(openssl rand -hex 32)
+              fi
+            fi
+
+            # Write env file from secrets + persisted values (preserves all config)
             cat > .env << EOF
             ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
+            HIVE_SIGNING_SECRET=$EXISTING_HIVE_SIGNING_SECRET
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
             HIVE_URL=http://localhost:8080
             HIVE_URL_OVERRIDE=https://hive.rajeev.me
@@ -199,6 +217,7 @@ jobs:
             HIVE_SSL_CERT=/etc/letsencrypt/live/hive.rajeev.me/fullchain.pem
             HIVE_SSL_KEY=/etc/letsencrypt/live/hive.rajeev.me/privkey.pem
             COOKIE_SECURE=1
+            MARKETPLACE_URL=https://hive.rajeev.me
             EOF
 
             # Build agent image
@@ -247,9 +266,22 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            # Load persisted HIVE_SIGNING_SECRET from existing .env
+            EXISTING_HIVE_SIGNING_SECRET=""
+            if [ -f .env ]; then
+              EXISTING_HIVE_SIGNING_SECRET=$(grep -E '^HIVE_SIGNING_SECRET=' .env 2>/dev/null | cut -d'=' -f2- || true)
+            fi
+            if [ -z "$EXISTING_HIVE_SIGNING_SECRET" ]; then
+              EXISTING_HIVE_SIGNING_SECRET="${{ secrets.HIVE_SIGNING_SECRET }}"
+              if [ -z "$EXISTING_HIVE_SIGNING_SECRET" ]; then
+                EXISTING_HIVE_SIGNING_SECRET=$(openssl rand -hex 32)
+              fi
+            fi
+
             cat > .env << EOF
             ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
+            HIVE_SIGNING_SECRET=$EXISTING_HIVE_SIGNING_SECRET
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
             HIVE_URL=http://localhost:8080
             HIVE_URL_OVERRIDE=https://hive.rajeev.me
@@ -258,6 +290,7 @@ jobs:
             HIVE_SSL_CERT=/etc/letsencrypt/live/hive.rajeev.me/fullchain.pem
             HIVE_SSL_KEY=/etc/letsencrypt/live/hive.rajeev.me/privkey.pem
             COOKIE_SECURE=1
+            MARKETPLACE_URL=https://hive.rajeev.me
             EOF
 
             docker build -t agent-marketplace-agent:latest -f docker/Dockerfile.agent docker/ || true
@@ -296,9 +329,22 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            # Load persisted HIVE_SIGNING_SECRET from existing .env
+            EXISTING_HIVE_SIGNING_SECRET=""
+            if [ -f .env ]; then
+              EXISTING_HIVE_SIGNING_SECRET=$(grep -E '^HIVE_SIGNING_SECRET=' .env 2>/dev/null | cut -d'=' -f2- || true)
+            fi
+            if [ -z "$EXISTING_HIVE_SIGNING_SECRET" ]; then
+              EXISTING_HIVE_SIGNING_SECRET="${{ secrets.HIVE_SIGNING_SECRET }}"
+              if [ -z "$EXISTING_HIVE_SIGNING_SECRET" ]; then
+                EXISTING_HIVE_SIGNING_SECRET=$(openssl rand -hex 32)
+              fi
+            fi
+
             cat > .env << EOF
             ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
+            HIVE_SIGNING_SECRET=$EXISTING_HIVE_SIGNING_SECRET
             OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
             HIVE_URL=http://localhost:8080
             HIVE_URL_OVERRIDE=https://hive.rajeev.me
@@ -307,6 +353,7 @@ jobs:
             HIVE_SSL_CERT=/etc/letsencrypt/live/hive.rajeev.me/fullchain.pem
             HIVE_SSL_KEY=/etc/letsencrypt/live/hive.rajeev.me/privkey.pem
             COOKIE_SECURE=1
+            MARKETPLACE_URL=https://hive.rajeev.me
             EOF
 
             docker build -t agent-marketplace-agent:latest -f docker/Dockerfile.agent docker/ || true

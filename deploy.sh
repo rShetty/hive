@@ -77,11 +77,11 @@ log_info "Deploying to ${REMOTE_SERVER}:${REMOTE_PORT} (branch: ${GIT_BRANCH})"
 log_info "OpenClaw VPS host: ${OC_HOST} | SSH key: ${OC_SSH_KEY}"
 
 # Load persisted keys from server's .env if not already set locally
-if [ -z "$ENCRYPTION_KEY" ] || [ -z "$SECRET_KEY" ]; then
+if [ -z "$ENCRYPTION_KEY" ] || [ -z "$SECRET_KEY" ] || [ -z "$HIVE_SIGNING_SECRET" ]; then
     log_info "Checking server for persisted keys at /opt/${APP_NAME}/.env ..."
     SERVER_ENV=$(ssh "$REMOTE_HOST" "cat /opt/${APP_NAME}/.env 2>/dev/null || true")
     if echo "$SERVER_ENV" | grep -q "ENCRYPTION_KEY="; then
-        eval "$(echo "$SERVER_ENV" | grep -E '^(ENCRYPTION_KEY|SECRET_KEY)=')"
+        eval "$(echo "$SERVER_ENV" | grep -E '^(ENCRYPTION_KEY|SECRET_KEY|HIVE_SIGNING_SECRET)=')"
         log_info "Loaded keys from server .env"
     fi
 fi
@@ -98,6 +98,12 @@ fi
 if [ -z "$SECRET_KEY" ]; then
     log_warn "SECRET_KEY not set. Generating a random one..."
     export SECRET_KEY=$(openssl rand -hex 32)
+    KEYS_GENERATED=true
+fi
+
+if [ -z "$HIVE_SIGNING_SECRET" ]; then
+    log_warn "HIVE_SIGNING_SECRET not set. Generating a random one..."
+    export HIVE_SIGNING_SECRET=$(openssl rand -hex 32)
     KEYS_GENERATED=true
 fi
 
@@ -183,6 +189,8 @@ services:
       - DATABASE_URL=sqlite+aiosqlite:////app/data/agent_marketplace.db
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - SECRET_KEY=${SECRET_KEY}
+      - HIVE_SIGNING_SECRET=${HIVE_SIGNING_SECRET}
+      - REDIS_URL=redis://redis:6379/0
       - HIVE_URL=${HIVE_URL_OVERRIDE:-http://${REMOTE_SERVER}:${REMOTE_PORT}}
       - HIVE_DOMAIN=${HIVE_DOMAIN:-}
       - HIVE_SSL_CERT=${HIVE_SSL_CERT:-}
@@ -194,13 +202,28 @@ services:
       - OPENCLAW_VPS_SSH_USER=${OC_SSH_USER}
       - OPENCLAW_VPS_SSH_PORT=${OC_SSH_PORT}
       - COOKIE_SECURE=1
+      - DEV_MODE=0
     volumes:
       - /opt/${APP_NAME}/data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /root/.ssh:/root/.ssh:ro
+    depends_on:
+      - redis
     restart: unless-stopped
     networks:
       - agent-marketplace
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - agent-marketplace
+
+volumes:
+  redis-data:
 
 networks:
   agent-marketplace:
@@ -292,6 +315,7 @@ if [ "$KEYS_GENERATED" = true ]; then
     ssh "$REMOTE_HOST" "cat > /opt/${APP_NAME}/.env << 'ENVEOF'
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 SECRET_KEY=${SECRET_KEY}
+HIVE_SIGNING_SECRET=${HIVE_SIGNING_SECRET}
 ENVEOF"
     log_info ""
     log_warn "⚠️  IMPORTANT: New keys were generated and saved to /opt/${APP_NAME}/.env on the server."
@@ -299,6 +323,7 @@ ENVEOF"
     echo ""
     echo "export ENCRYPTION_KEY='${ENCRYPTION_KEY}'"
     echo "export SECRET_KEY='${SECRET_KEY}'"
+    echo "export HIVE_SIGNING_SECRET='${HIVE_SIGNING_SECRET}'"
     echo ""
 fi
 

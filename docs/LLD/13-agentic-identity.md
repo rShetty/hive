@@ -622,20 +622,347 @@ services:
 | `backend/routers/deploy.py` | Keypair generation on all deploy paths, `api_key_encrypted` |
 | `backend/routers/invites.py` | Keypair generation on invite accept |
 | `backend/middleware/rate_limit.py` | slowapi → Redis storage |
-| `docker/agent_app/main.py` | Inbound HMAC verification on `/delegate` |
-| `agent-sdk/marketplace_client.py` | `send_signed_callback()`, `set_signing_key()`, timing-safe health check |
-| `docker-compose.prod.yml` | Redis service, `HIVE_SIGNING_SECRET`, `REDIS_URL` |
+| `docker/agent_app/main.py` | Inbound signature verification (Ed25519 + HMAC) on `/delegate` |
+| `agent-sdk/marketplace_client.py` | `send_signed_callback()`, `sign_delegation_request()`, `set_signing_key()`, timing-safe health check |
+| `backend/services/platform_keys.py` | Hive platform Ed25519 keypair — generation, persistence, signing |
+| `backend/services/did.py` | W3C DID (`did:hive`) method — resolution, DID Document construction |
+| `backend/services/credentials.py` | W3C Verifiable Credentials — issuance, signing, verification |
+| `backend/services/mtls.py` | Optional mTLS client cert auth — fingerprint computation, nginx config |
+| `backend/services/migrate_keys.py` | Migration tool — issue Ed25519 keys to legacy agents |
+| `backend/database.py` | Postgres/SQLite dual support, `lock_for_update()` helper |
+| `docker-compose.prod.yml` | Postgres + Redis services, all security env vars |
 | `.env.example` | All new env vars documented |
 
 ---
 
-## 17. Future work (deferred)
+## 17. Postgres support
 
-| Item | Description |
-|------|-------------|
-| **Postgres migration** | SQLite → Postgres for row-level locking (`SELECT FOR UPDATE`) on wallet operations. Deferred to a separate effort. |
-| **Outbound Ed25519** | Upgrade Hive → agent payloads from shared HMAC to per-deployment asymmetric signing. |
-| **W3C DIDs** | Portable, resolvable agent identity (e.g. `did:hive:agent-uuid`). |
-| **Verifiable Credentials** | Attestation chains (e.g. "this agent is owned by X", "certified by Y"). |
-| **mTLS** | Agent ↔ platform transport auth via TLS client certs. |
-| **Full HMAC deprecation** | Once all agents have Ed25519 keys, remove the legacy HMAC verification path. |
+Hive now supports both SQLite (dev) and PostgreSQL (prod) via `DATABASE_URL`.
+
+### Engine configuration (`backend/database.py`)
+
+- **SQLite**: `NullPool` (file-based, no benefit from pooling)
+- **Postgres**: `AsyncAdaptedQueuePool` (connection pooling for concurrency)
+
+Auto-migration is dialect-aware:
+- SQLite: `PRAGMA table_info` → `ALTER TABLE ADD COLUMN`
+- Postgres: `information_schema.columns` → `ALTER TABLE ADD COLUMN`
+
+### Row-level locking — `lock_for_update()`
+
+```python
+def lock_for_update(query):
+    if IS_POSTGRES:
+        return query.with_for_update()
+    return query  # SQLite: no-op (serialises writes via DB-level locking)
+```
+
+Applied to all wallet escrow/settlement operations to prevent concurrent double-spend:
+
+| Operation | File:Line | Lock |
+|-----------|-----------|------|
+| User→agent escrow | `delegation.py:468` | `from_wallet` |
+| Agent→agent escrow | `delegation.py:598` | `delegating_wallet` |
+| `/complete` settlement | `delegation.py:985` | both wallets |
+| `/callback` settlement | `delegation.py:1172` | both wallets |
+
+### docker-compose.prod.yml
+
+```yaml
+postgres:
+  image: postgres:16-alpine
+  environment:
+    - POSTGRES_DB=hive
+    - POSTGRES_USER=hive
+    - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U hive -d hive"]
+```
+
+---
+
+## 18. Platform Ed25519 signing (outbound)
+
+Hive generates its own Ed25519 keypair at startup and uses it to sign outbound delegation payloads sent to agents. This replaces the shared `HIVE_SIGNING_SECRET` for the outbound direction.
+
+### Key management — `backend/services/platform_keys.py`
+
+- **Generation**: at first startup, a keypair is generated and persisted in the `platform_keys` table.
+- **Env injection**: `HIVE_PLATFORM_PRIVATE_KEY` (PEM) takes precedence — useful for deployments that inject keys via secret files.
+- **Publication**: the public key is published at `/.well-known/hive-identity` so agents can verify Hive's signatures.
+- **Caching**: the key is loaded once at startup and cached in memory.
+
+### Outbound signing (`services/agent_client.py`)
+
+Every outbound delegation payload now carries **both** signatures (dual mode):
+```
+X-Hive-Signature: sha256=<hmac>          # legacy (retained during transition)
+X-Hive-Signature-Ed25519: <base64>       # preferred
+X-Hive-Key-Id: hive-<12hex>
+X-Hive-Timestamp: <unix-ts>
+```
+
+### Agent runtime verification (`docker/agent_app/main.py`)
+
+The agent runtime:
+1. Fetches Hive's public key from `/.well-known/hive-identity` (cached for 5 min).
+2. Tries Ed25519 verification first (preferred).
+3. Falls back to legacy HMAC if Ed25519 fails or no platform key is available.
+4. Fails closed (401) when `HIVE_SIGNING_SECRET` is configured and no signature verifies.
+
+### Well-known identity endpoint
+
+```
+GET /.well-known/hive-identity
+→ {
+    "platform": "Hive Marketplace",
+    "key_id": "hive-18fb30597437",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+    "signature_algorithm": "Ed25519",
+    "legacy_hmac": { "status": "deprecated — retained for dual-signing transition" }
+  }
+```
+
+---
+
+## 19. Agent-to-agent authentication
+
+When Agent A delegates to Agent B, B can now cryptographically verify who initiated the delegation.
+
+### Delegating agent identity in payloads
+
+The outbound delegation payload now includes a `delegating_agent` field:
+```json
+{
+  "delegation_id": "...",
+  "task": "...",
+  "delegating_agent": {
+    "agent_id": "uuid",
+    "name": "Agent A",
+    "slug": "agent-a-a1b2c3",
+    "signing_key_id": "ak-a1b2c3d4e5f6"
+  }
+}
+```
+
+### Agent runtime — provenance logging
+
+The agent runtime logs the delegating agent's identity on receipt:
+```python
+if delegating_agent:
+    _log_activity("delegation",
+        f"Task from {delegating_agent['name']} "
+        f"(agent_id={delegating_agent['agent_id'][:8]}, "
+        f"key_id={delegating_agent['signing_key_id']})")
+```
+
+### SDK — signed delegation requests
+
+Agents can sign their delegation requests with their Ed25519 private key:
+```python
+client.sign_delegation_request(
+    target_agent_id="uuid",
+    task_description="do something",
+    max_tokens=100,
+)
+```
+
+The signature is sent in `X-Agent-Signature-Ed25519` + `X-Agent-Key-Id` headers, allowing Hive to verify the delegating agent's identity cryptographically (in addition to the API key).
+
+---
+
+## 20. W3C Decentralized Identifiers (DIDs)
+
+Every agent registered in Hive automatically gets a DID: `did:hive:{agent_id}`.
+
+### DID method — `backend/services/did.py`
+
+- **Method name**: `hive`
+- **Method-specific ID**: the agent's UUID
+- **Resolution**: `GET /.well-known/did/{did}` or `GET /api/agents/{id}/did-document`
+- **DID Document**: follows W3C DID Core spec with Ed25519VerificationKey2020
+
+### DID Document structure
+
+```json
+{
+  "@context": ["https://www.w3.org/ns/did/v1", "...ed25519-2020/v1"],
+  "id": "did:hive:afc5ba80-...",
+  "verificationMethod": [{
+    "id": "did:hive:afc5ba80-...#signing-key",
+    "type": "Ed25519VerificationKey2020",
+    "controller": "did:hive:afc5ba80-...",
+    "publicKeyMultibase": "u..."
+  }],
+  "authentication": ["did:hive:...#signing-key"],
+  "assertionMethod": ["did:hive:...#signing-key"],
+  "service": [
+    {"id": "...#delegation", "type": "HiveDelegationEndpoint", "serviceEndpoint": "..."},
+    {"id": "...#marketplace", "type": "HiveMarketplaceEntry", "serviceEndpoint": "..."},
+    {"id": "...#dashboard", "type": "HiveDashboard", "serviceEndpoint": "..."}
+  ],
+  "x-hive": { "agent_id": "...", "name": "...", "signing_key_id": "ak-..." }
+}
+```
+
+### AgentCard integration
+
+The A2A AgentCard now includes the agent's DID:
+```json
+{ "id": "did:hive:afc5ba80-...", "x-hive": { "did": "did:hive:afc5ba80-..." } }
+```
+
+---
+
+## 21. Verifiable Credentials
+
+Hive, as the platform authority, issues W3C Verifiable Credentials (VCs) attesting to agent properties. These are signed with Hive's platform Ed25519 key and verifiable by any third party.
+
+### Credential types — `backend/services/credentials.py`
+
+| Credential | Attests to |
+|------------|-----------|
+| `HiveOwnershipCredential` | A specific user owns this agent (email, name, registration date) |
+| `HiveAgentCredential` | Agent metadata (type, capabilities, status, version, has crypto identity) |
+| `HiveMarketplaceCredential` | Marketplace listing (public visibility, pricing model) |
+
+### Endpoints
+
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `GET /api/agents/{id}/credentials` | Public | All applicable VCs for the agent |
+
+### VC structure
+
+```json
+{
+  "@context": ["https://www.w3.org/ns/credentials/v2", "...ed25519-2020/v1"],
+  "id": "urn:uuid:...",
+  "type": ["VerifiableCredential", "HiveOwnershipCredential"],
+  "issuer": "did:hive:platform",
+  "issuanceDate": "2026-01-01T00:00:00Z",
+  "credentialSubject": { "id": "did:hive:...", "agent_name": "...", "owner_email": "..." },
+  "proof": {
+    "type": "Ed25519Signature2020",
+    "verificationMethod": "did:hive:platform#hive-...",
+    "proofValue": "<base64-signature>",
+    "proofPurpose": "assertionMethod"
+  }
+}
+```
+
+### Verification
+
+Third parties verify a VC by:
+1. Fetching Hive's public key from `/.well-known/hive-identity`.
+2. Checking the `proof.proofValue` (Ed25519 signature over the VC without the proof block).
+
+The `services.credentials.verify_vc()` function does this programmatically.
+
+---
+
+## 22. mTLS support (optional)
+
+Optional mutual TLS for transport-level cryptographic identity.
+
+### Configuration — `backend/services/mtls.py`
+
+| Env var | Purpose |
+|---------|---------|
+| `MTLS_ENABLED` | Set to `1` to enable mTLS client cert verification |
+| `MTLS_CA_CERT_PATH` | Path to the CA cert that signs agent client certs |
+
+### Agent cert fingerprints
+
+Agents register their client cert fingerprint (SHA-256) on their Agent row:
+
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `PUT /api/agent/mtls-cert` | Master key | Register/update cert fingerprint |
+| `DELETE /api/agent/mtls-cert` | Master key | Remove cert fingerprint |
+
+New Agent column: `mtls_cert_fingerprint` (String(64), indexed).
+
+### How it works
+
+When mTLS is enabled:
+1. nginx/Traefik is configured with `ssl_verify_client optional`.
+2. The client cert fingerprint is forwarded as `X-Client-Cert-Fingerprint` header.
+3. Hive looks up the agent by fingerprint (no API key needed for transport auth).
+4. Agents without a cert fall back to API-key auth.
+
+The `get_mtls_nginx_config()` helper returns the nginx config snippet for deployment scripts.
+
+### Additive, not exclusive
+
+mTLS is **additive** — it provides transport-level identity in addition to (not instead of) the application-level API key + Ed25519 signing. Agents can still use API keys when mTLS isn't available (e.g. behind a TLS-terminating proxy).
+
+---
+
+## 23. HMAC deprecation path
+
+### Migration tool — `backend/services/migrate_keys.py`
+
+Issues Ed25519 keypairs to legacy agents (those with `signing_key_id = NULL`):
+
+```bash
+# Dry run — show agents without keys
+python -m services.migrate_keys
+
+# Apply — issue keys + write private keys to JSON file
+python -m services.migrate_keys --apply
+
+# Single agent
+python -m services.migrate_keys --agent-id <uuid>
+```
+
+The output file (`key_migration_output.json`) contains private keys for out-of-band delivery to agent owners.
+
+### Migration status API
+
+```
+GET /api/agents/admin/migration-status  (admin only)
+→ {
+    "total_agents": 42,
+    "migrated": 40,
+    "legacy_hmac_only": 2,
+    "migration_percentage": 95.2,
+    "can_deprecate_hmac": false,
+    "message": "2 agent(s) still rely on legacy HMAC. Run the migration tool."
+  }
+```
+
+### Deprecation timeline
+
+1. **Current**: dual mode — both Ed25519 and HMAC accepted. New agents get Ed25519 keys at registration.
+2. **Migrate**: run the migration tool to issue keys to legacy agents.
+3. **Verify**: check migration status endpoint — `can_deprecate_hmac` should be `true`.
+4. **Deprecate**: remove the HMAC fallback path in `_verify_callback_signature` and the agent runtime's `_verify_hive_signature`.
+5. **Remove**: delete `HIVE_SIGNING_SECRET` from env vars and docker-compose.
+
+---
+
+## 24. Security properties (updated)
+
+| Property | Mechanism | Status |
+|----------|-----------|--------|
+| Agent → Hive auth | bcrypt-hashed API key + prefix index | ✅ |
+| Scoped access | `AgentApiKey` table + `require_scopes()` | ✅ |
+| Per-agent non-repudiation | Ed25519 keypair, private key with owner | ✅ |
+| Platform → agent non-repudiation | Platform Ed25519 keypair, published at `/.well-known/hive-identity` | ✅ |
+| Callback integrity | Ed25519 signature over `timestamp.body` | ✅ |
+| Callback replay prevention | Redis nonce store + 5-min timestamp window | ✅ |
+| Cross-agent forgery prevention | Per-agent keys (no shared secret) | ✅ |
+| JWT revocation | `jti` denylist in Redis | ✅ |
+| Refresh-token reuse detection | Rotation revokes old `jti` | ✅ |
+| Distributed rate limiting | slowapi → Redis | ✅ |
+| Agent runtime inbound verification | Ed25519 (preferred) + HMAC (legacy) on `/delegate` | ✅ |
+| Raw key isolation | Dedicated `api_key_encrypted` column | ✅ |
+| Prod config enforcement | `enforce_prod_config()` at startup | ✅ |
+| Backward compatibility | Dual Ed25519 + HMAC verification | ✅ |
+| **Portable identity** | W3C DID (`did:hive:{agent_id}`) | ✅ New |
+| **Verifiable attestations** | W3C Verifiable Credentials (ownership, agent, marketplace) | ✅ New |
+| **Transport-level auth** | Optional mTLS client cert verification | ✅ New |
+| **Agent-to-agent provenance** | Delegating agent identity in payload + SDK signing | ✅ New |
+| **HMAC deprecation path** | Migration tool + admin status endpoint | ✅ New |
+| **Postgres row-level locking** | `SELECT FOR UPDATE` on wallet operations | ✅ New |

@@ -27,7 +27,7 @@ import os
 import hmac as _hmac
 import hashlib
 
-from database import get_db, async_session_maker
+from database import get_db, async_session_maker, lock_for_update
 from models.agent import Agent, AgentStatus
 from models.user import User
 from models.wallet import Wallet
@@ -219,12 +219,16 @@ async def _execute_delegation_task(
     callback_url: str | None,
     context: dict | None,
     timeout_seconds: int,
+    delegating_agent: dict | None = None,
 ) -> None:
     """Dispatch the delegation to the executing agent.
 
     Runs entirely in the background after the HTTP response has been sent,
     with its own DB session (the request-scoped session is already closed).
     Streams progress into the SSE channel as it goes.
+
+    If ``delegating_agent`` is provided, its identity is included in the
+    outbound payload so the executing agent knows who initiated the task.
     """
     await add_delegation_log(
         delegation_id,
@@ -248,6 +252,7 @@ async def _execute_delegation_task(
             callback_url=callback_url,
             context=context,
             timeout=timeout_seconds,
+            delegating_agent=delegating_agent,
         )
     except AgentTimeoutError:
         await _mark_failed(delegation_id, "agent_timeout",
@@ -465,6 +470,15 @@ async def user_request_delegation(
     user_wallet = await get_or_create_wallet(current_user.id, db)
     target_wallet = await get_or_create_wallet(target_agent.owner_id, db)
 
+    # Lock the wallet row (FOR UPDATE on Postgres, no-op on SQLite) so
+    # concurrent delegations can't both see the same balance and double-spend.
+    await db.execute(
+        lock_for_update(
+            select(Wallet).where(Wallet.id == user_wallet.id)
+        )
+    )
+    await db.refresh(user_wallet)
+
     # Atomic escrow: deduct then flush to detect overdraft.
     user_wallet.balance -= Decimal(str(delegation.max_tokens))
     await db.flush()
@@ -586,6 +600,14 @@ async def request_delegation(
     delegating_wallet = await get_or_create_wallet(agent.owner_id, db)
     target_wallet = await get_or_create_wallet(target_agent.owner_id, db)
 
+    # Lock the delegating wallet row to prevent concurrent double-spend.
+    await db.execute(
+        lock_for_update(
+            select(Wallet).where(Wallet.id == delegating_wallet.id)
+        )
+    )
+    await db.refresh(delegating_wallet)
+
     if target_agent.pricing_model:
         if target_agent.pricing_model.get("type") == "token":
             required_rate = Decimal(str(target_agent.pricing_model.get("rate", 0)))
@@ -650,6 +672,12 @@ async def request_delegation(
         callback_url=delegation.callback_url,
         context=delegation.context,
         timeout_seconds=delegation.timeout_seconds,
+        delegating_agent={
+            "agent_id": agent.id,
+            "name": agent.name,
+            "slug": agent.slug,
+            "signing_key_id": agent.signing_key_id,
+        },
     )
 
     return DelegationResponse(
@@ -965,11 +993,13 @@ async def complete_delegation(
 
     tokens_used = Decimal(str(completion.tokens_used))
 
+    # Lock both wallets for the settlement to prevent concurrent
+    # complete/callback from double-settling.
     target_wallet = (await db.execute(
-        select(Wallet).where(Wallet.id == transaction.to_wallet_id)
+        lock_for_update(select(Wallet).where(Wallet.id == transaction.to_wallet_id))
     )).scalar_one()
     from_wallet = (await db.execute(
-        select(Wallet).where(Wallet.id == transaction.from_wallet_id)
+        lock_for_update(select(Wallet).where(Wallet.id == transaction.from_wallet_id))
     )).scalar_one()
 
     await _settle_delegation(
@@ -1150,11 +1180,12 @@ async def delegation_callback(
 
     tokens_used = Decimal(str(callback_data.tokens_used))
 
+    # Lock both wallets for settlement (prevents concurrent double-settle).
     target_wallet = (await db.execute(
-        select(Wallet).where(Wallet.id == transaction.to_wallet_id)
+        lock_for_update(select(Wallet).where(Wallet.id == transaction.to_wallet_id))
     )).scalar_one()
     from_wallet = (await db.execute(
-        select(Wallet).where(Wallet.id == transaction.from_wallet_id)
+        lock_for_update(select(Wallet).where(Wallet.id == transaction.from_wallet_id))
     )).scalar_one()
 
     await _settle_delegation(

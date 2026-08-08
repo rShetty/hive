@@ -35,7 +35,18 @@ async def lifespan(app: FastAPI):
     enforce_prod_config()
     # Startup
     await init_db()
-    
+
+    # Load or create the platform Ed25519 keypair (for signing outbound
+    # delegation payloads to agents).
+    try:
+        from database import async_session_maker
+        from services.platform_keys import load_or_create_platform_key
+        async with async_session_maker() as session:
+            await load_or_create_platform_key(session)
+        print("🔐 Platform signing key loaded")
+    except Exception as e:
+        print(f"⚠️  Platform key load skipped: {e}")
+
     # Seed skills (need a session)
     from database import async_session_maker
     async with async_session_maker() as session:
@@ -208,6 +219,49 @@ async def well_known_jwks():
             "Token verification requires the shared HIVE_SIGNING_SECRET."
         ),
     }
+
+
+@app.get("/.well-known/hive-identity")
+async def well_known_hive_identity():
+    """Publish Hive's platform public key and identity metadata.
+
+    Agents fetch this endpoint to verify the Ed25519 signature on inbound
+    delegation payloads (``X-Hive-Signature-Ed25519`` header). The ``key_id``
+    in the header matches the ``key_id`` field here so agents can cache
+    keys and detect rotations.
+    """
+    from services.platform_keys import get_platform_public_pem, get_platform_key_id
+    marketplace_url = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
+    return {
+        "platform": "Hive Marketplace",
+        "marketplace_url": marketplace_url,
+        "key_id": get_platform_key_id(),
+        "public_key_pem": get_platform_public_pem(),
+        "signature_algorithm": "Ed25519",
+        "legacy_hmac": {
+            "algorithm": "HMAC-SHA256",
+            "secret_env": "HIVE_SIGNING_SECRET",
+            "status": "deprecated — retained for dual-signing transition",
+        },
+    }
+
+
+@app.get("/.well-known/did/{did}")
+async def resolve_did_endpoint(did: str):
+    """Resolve a W3C DID to its DID Document.
+
+    Supports the ``did:hive:{agent_id}`` method. Returns a standard W3C DID
+    Document containing the agent's Ed25519 verification method and service
+    endpoints. This makes agent identity portable and resolvable by external
+    systems without direct API access to Hive.
+    """
+    from services.did import resolve_did
+    from database import async_session_maker
+    async with async_session_maker() as db:
+        doc = await resolve_did(did, db)
+    if not doc:
+        raise HTTPException(status_code=404, detail="DID not found")
+    return doc
 
 
 @app.get("/api/metrics")

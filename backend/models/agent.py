@@ -81,6 +81,11 @@ class Agent(Base):
     signing_key_id = Column(String(40), nullable=True, index=True)
     signing_public_key = Column(Text, nullable=True)
     signing_key_created_at = Column(DateTime, nullable=True)
+
+    # Optional mTLS client certificate fingerprint (SHA-256 hex). When mTLS
+    # is enabled, Hive identifies the agent by this fingerprint without
+    # requiring an API key. See services/mtls.py.
+    mtls_cert_fingerprint = Column(String(64), nullable=True, index=True)
     
     # Status
     status = Column(String(20), default=AgentStatus.PENDING.value)

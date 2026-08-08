@@ -50,10 +50,11 @@ class AgentClient:
         context: Optional[Dict[str, Any]] = None,
         timeout: Optional[int] = None,
         sync: bool = False,
+        delegating_agent: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Send a delegation task to a target agent.
-        
+
         Args:
             target_endpoint: Agent's endpoint URL
             delegation_id: Unique delegation ID
@@ -62,7 +63,11 @@ class AgentClient:
             callback_url: Optional callback URL for results
             context: Optional task context
             timeout: Optional custom timeout
-            
+            sync: Whether to run synchronously
+            delegating_agent: Optional identity of the delegating agent
+                ``{"agent_id", "name", "slug", "signing_key_id"}``. Included
+                in the payload so the executing agent knows who delegated.
+
         Returns:
             Dict with agent's response
             
@@ -83,6 +88,16 @@ class AgentClient:
             "requested_at": datetime.utcnow().isoformat(),
             "sync": sync,
         }
+
+        # Include the delegating agent's identity so the executing agent
+        # knows who initiated the delegation (agent-to-agent provenance).
+        if delegating_agent:
+            payload["delegating_agent"] = {
+                "agent_id": delegating_agent.get("agent_id"),
+                "name": delegating_agent.get("name"),
+                "slug": delegating_agent.get("slug"),
+                "signing_key_id": delegating_agent.get("signing_key_id"),
+            }
         
         # Ensure endpoint has /delegate path if not already specified.
         # Managed/local agents expose their delegation handler at /delegate;
@@ -108,28 +123,38 @@ class AgentClient:
         
         try:
             import json as _json
+            from services.platform_keys import sign_outbound
             body_bytes = _json.dumps(payload, separators=(",", ":")).encode()
             ts = str(int(time.time()))
             sig = _make_signature(body_bytes, ts)
+
+            headers = {
+                "Content-Type": "application/json",
+                "X-Hive-Delegation-ID": delegation_id,
+                "X-Hive-Timestamp": ts,
+                "X-Hive-Signature": f"sha256={sig}",
+                "User-Agent": "Hive-Marketplace/1.0",
+            }
+
+            # Attach the platform Ed25519 signature (preferred by updated
+            # agents). Legacy agents ignore this header and verify the HMAC.
+            ed_sig = sign_outbound(ts, body_bytes)
+            if ed_sig:
+                headers["X-Hive-Signature-Ed25519"] = ed_sig[0]
+                headers["X-Hive-Key-Id"] = ed_sig[1]
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     target_endpoint,
                     data=body_bytes,
                     timeout=aiohttp.ClientTimeout(total=request_timeout),
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-Hive-Delegation-ID": delegation_id,
-                        "X-Hive-Timestamp": ts,
-                        "X-Hive-Signature": f"sha256={sig}",
-                        "User-Agent": "Hive-Marketplace/1.0",
-                    }
+                    headers=headers,
                 ) as response:
                     response.raise_for_status()
                     result = await response.json()
-                    
+
                     print(f"✅ Agent responded: {target_endpoint} - Status: {result.get('status', 'unknown')}")
-                    
+
                     return result
                     
         except asyncio.TimeoutError as e:

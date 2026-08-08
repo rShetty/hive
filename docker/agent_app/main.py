@@ -48,37 +48,101 @@ _HIVE_MAX_SKEW = 300
 
 
 def _verify_hive_signature(request: Request, body: bytes) -> None:
-    """Verify the HMAC-SHA256 signature on an inbound Hive delegation payload.
+    """Verify the signature on an inbound Hive delegation payload.
+
+    Supports two signature types (dual-signing transition):
+    1. Ed25519 (preferred): ``X-Hive-Signature-Ed25519`` + ``X-Hive-Key-Id``.
+       The agent fetches Hive's public key from ``/.well-known/hive-identity``
+       and verifies the signature. The public key is cached.
+    2. Legacy HMAC: ``X-Hive-Signature: sha256=...`` verified with
+       ``HIVE_SIGNING_SECRET``.
 
     Fails closed (401) when a signature header is present. If no
-    HIVE_SIGNING_SECRET is configured the check is skipped with a warning —
-    this preserves backward compatibility for runtimes that haven't been
-    redeployed with the secret injected. Prod deploys inject the secret.
+    HIVE_SIGNING_SECRET is configured the HMAC check is skipped with a
+    warning — this preserves backward compatibility for runtimes that
+    haven't been redeployed with the secret injected. Prod deploys inject
+    the secret.
     """
-    secret = _signing_secret()
+    import base64 as _b64
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.exceptions import InvalidSignature
+
     sig_header = request.headers.get("X-Hive-Signature", "")
     ts_header = request.headers.get("X-Hive-Timestamp", "")
-    if not sig_header and not ts_header:
-        # No signature headers — pre-signing caller. Allow only when no secret
-        # is configured (dev/legacy); otherwise reject.
+    ed25519_header = request.headers.get("X-Hive-Signature-Ed25519", "")
+
+    if not sig_header and not ed25519_header and not ts_header:
+        secret = _signing_secret()
         if secret and secret != "change-me-in-production":
             raise HTTPException(status_code=401, detail="Missing signature headers")
         return
-    if not secret or secret == "change-me-in-production":
-        # Secret not configured: cannot verify. Allow with a warning rather than
-        # breaking legacy runtimes.
-        _log_activity("warning", "Inbound payload not verified — HIVE_SIGNING_SECRET not configured")
-        return
+
+    if not ts_header:
+        raise HTTPException(status_code=401, detail="Missing X-Hive-Timestamp header")
+
     try:
         ts_val = int(ts_header)
     except (TypeError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid X-Hive-Timestamp header")
     if abs(int(time.time()) - ts_val) > _HIVE_MAX_SKEW:
         raise HTTPException(status_code=401, detail="Timestamp outside allowed window")
+
     message = f"{ts_header}.".encode() + body
+
+    # 1. Try Ed25519 first (preferred).
+    if ed25519_header:
+        pub_pem = _get_hive_platform_pubkey()
+        if pub_pem:
+            try:
+                pub = serialization.load_pem_public_key(pub_pem.encode("ascii"))
+                pub.verify(_b64.b64decode(ed25519_header), message)
+                return  # Ed25519 verified — done.
+            except (InvalidSignature, ValueError, Exception):
+                pass  # fall through to HMAC
+
+    # 2. Fall back to legacy HMAC.
+    secret = _signing_secret()
+    if not secret or secret == "change-me-in-production":
+        _log_activity("warning", "Inbound payload not verified — no HIVE_SIGNING_SECRET configured")
+        return
     expected = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig_header, expected):
         raise HTTPException(status_code=401, detail="Invalid signature")
+
+
+# Cache for Hive's platform public key (fetched from /.well-known/hive-identity).
+_hive_platform_pubkey_cache: Optional[str] = None
+_hive_platform_pubkey_fetched_at: float = 0
+_HIVE_PUBKEY_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_hive_platform_pubkey() -> Optional[str]:
+    """Fetch and cache Hive's platform public key from the well-known endpoint.
+
+    Cached for 5 minutes so we don't hit Hive on every delegation. On error,
+    returns None (falls back to HMAC).
+    """
+    global _hive_platform_pubkey_cache, _hive_platform_pubkey_fetched_at
+    now = time.time()
+    if _hive_platform_pubkey_cache and (now - _hive_platform_pubkey_fetched_at) < _HIVE_PUBKEY_CACHE_TTL:
+        return _hive_platform_pubkey_cache
+    if not HIVE_URL:
+        return None
+    try:
+        import httpx
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{HIVE_URL}/.well-known/hive-identity")
+            if resp.status_code == 200:
+                data = resp.json()
+                pem = data.get("public_key_pem")
+                if pem:
+                    _hive_platform_pubkey_cache = pem
+                    _hive_platform_pubkey_fetched_at = now
+                    return pem
+    except Exception:
+        pass
+    return _hive_platform_pubkey_cache  # return stale cache if available
 
 # MCP servers configured for this agent (list of {name, url, description, headers})
 try:
@@ -735,8 +799,17 @@ async def delegate(request: Request):
     callback_url = payload.get("callback_url")
     context = payload.get("context") or {}
     sync = payload.get("sync", False)
+    delegating_agent = payload.get("delegating_agent")
 
-    _log_activity("delegation", f"Task: {str(task)[:80]}", {"delegation_id": delegation_id})
+    # Log who delegated to us (agent-to-agent provenance).
+    if delegating_agent:
+        _log_activity("delegation",
+                      f"Task from {delegating_agent.get('name', 'unknown')} "
+                      f"(agent_id={delegating_agent.get('agent_id', '?')[:8]}, "
+                      f"key_id={delegating_agent.get('signing_key_id', 'none')})",
+                      {"delegation_id": delegation_id, "delegating_agent": delegating_agent})
+    else:
+        _log_activity("delegation", f"Task: {str(task)[:80]}", {"delegation_id": delegation_id})
 
     if sync:
         return await _run_delegation_sync(delegation_id, task, callback_url, context)

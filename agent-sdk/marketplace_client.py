@@ -205,6 +205,60 @@ class MarketplaceClient:
         response.raise_for_status()
         return response.json()
 
+    def sign_delegation_request(
+        self,
+        target_agent_id: str,
+        task_description: str,
+        max_tokens: float,
+        context: Optional[Dict] = None,
+    ) -> Dict:
+        """Create a signed agent-to-agent delegation request.
+
+        Returns the response from ``POST /api/delegate/request``. The request
+        body is signed with the agent's Ed25519 private key so Hive can
+        cryptographically verify who initiated the delegation.
+        """
+        import base64
+        import json as _json
+        import time as _time
+
+        if not self.api_key:
+            raise ValueError("API key not set. Register first.")
+
+        body_obj = {
+            "target_agent_id": target_agent_id,
+            "task_description": task_description,
+            "max_tokens": max_tokens,
+        }
+        if context:
+            body_obj["context"] = context
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": self.api_key,
+        }
+
+        # Attach Ed25519 signature if the agent has a signing key.
+        if getattr(self, "_signing_key", None):
+            body_bytes = _json.dumps(body_obj, separators=(",", ":")).encode()
+            ts = str(int(_time.time()))
+            message = f"{ts}.".encode() + body_bytes
+            sig = base64.b64encode(
+                self._signing_key.sign(message)
+            ).decode("ascii")
+            headers["X-Agent-Signature-Ed25519"] = sig
+            headers["X-Agent-Key-Id"] = self._signing_key_id
+            headers["X-Agent-Timestamp"] = ts
+
+        response = requests.post(
+            f"{self.marketplace_url}/api/delegate/request",
+            json=body_obj,
+            headers=headers,
+            timeout=120,
+        )
+        response.raise_for_status()
+        return response.json()
+
 
 class HealthCheckHandler:
     """Mixin for FastAPI apps to handle marketplace health checks."""

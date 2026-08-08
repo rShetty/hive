@@ -4,23 +4,32 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:////app/data/agent_marketplace.db
+      - DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:////app/data/agent_marketplace.db}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY before starting}
       - AGENT_IMAGE=agent-marketplace-agent:latest
-      - MARKETPLACE_URL=https://hive.rajeev.me
+      - MARKETPLACE_URL=${MARKETPLACE_URL:-https://hive.rajeev.me}
       - HIVE_URL=http://localhost:8080
-      - HIVE_DOMAIN=hive.rajeev.me
+      - HIVE_DOMAIN=${HIVE_DOMAIN:-hive.rajeev.me}
       - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY before starting}
       - HIVE_SIGNING_SECRET=${HIVE_SIGNING_SECRET:?Set HIVE_SIGNING_SECRET before starting}
       - REDIS_URL=redis://redis:6379/0
       - DEV_MODE=0
-      - COOKIE_SECURE=1
-      - ALLOWED_ORIGINS=https://hive.rajeev.me
+      - COOKIE_SECURE=${COOKIE_SECURE:-1}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://hive.rajeev.me}
       - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-openclaw/openclaw:latest}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - HIVE_URL_OVERRIDE=${HIVE_URL_OVERRIDE:-}
+      - HIVE_SSL_CERT=${HIVE_SSL_CERT:-}
+      - HIVE_SSL_KEY=${HIVE_SSL_KEY:-}
+      - OPENCLAW_VPS_HOST=${OPENCLAW_VPS_HOST:-}
+      - OPENCLAW_VPS_SSH_KEY_PATH=${OPENCLAW_VPS_SSH_KEY_PATH:-/root/.ssh/openclaw_deploy_key}
+      - OPENCLAW_VPS_SSH_USER=${OPENCLAW_VPS_SSH_USER:-root}
+      - OPENCLAW_VPS_SSH_PORT=${OPENCLAW_VPS_SSH_PORT:-22}
     volumes:
       - ./data:/app/data
       # WARNING: Docker socket grants host-level access. Use a socket proxy in production.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /root/.ssh:/root/.ssh:ro
     depends_on:
       - redis
     restart: unless-stopped

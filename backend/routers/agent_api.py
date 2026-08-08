@@ -624,4 +624,69 @@ async def get_discovered_skills(
     }
 
 
+# ── mTLS certificate fingerprint management ──────────────────────────────────
+
+@router.put("/mtls-cert")
+async def set_mtls_cert_fingerprint(
+    body: dict = Body(...),
+    agent: Agent = Depends(require_master_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Register or update the agent's mTLS client certificate fingerprint.
+
+    When mTLS is enabled on the platform, Hive identifies agents by their
+    client certificate fingerprint — no API key needed for transport auth.
+
+    Body: ``{"cert_pem": "-----BEGIN CERTIFICATE-----\\n..."}`` or
+    ``{"fingerprint": "sha256-hex"}``.
+
+    Requires the master API key (scoped keys can't change transport identity).
+    """
+    from services.mtls import compute_cert_fingerprint, is_mtls_enabled
+
+    cert_pem = (body or {}).get("cert_pem")
+    fingerprint = (body or {}).get("fingerprint")
+
+    if cert_pem:
+        fingerprint = compute_cert_fingerprint(cert_pem)
+    elif not fingerprint:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either 'cert_pem' or 'fingerprint' is required",
+        )
+
+    # Validate fingerprint format (64-char hex for SHA-256)
+    if len(fingerprint) != 64 or not all(c in "0123456789abcdef" for c in fingerprint.lower()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Fingerprint must be a 64-character SHA-256 hex string",
+        )
+
+    agent.mtls_cert_fingerprint = fingerprint
+    await db.commit()
+
+    print(f"🔒 mTLS cert fingerprint set for agent: {agent.name} (ID: {agent.id})")
+
+    return {
+        "agent_id": agent.id,
+        "mtls_cert_fingerprint": fingerprint,
+        "mtls_enabled": is_mtls_enabled(),
+        "message": "mTLS certificate fingerprint registered. "
+                   "When mTLS is enabled on the platform, the agent will be "
+                   "identified by this fingerprint without needing an API key.",
+    }
+
+
+@router.delete("/mtls-cert")
+async def remove_mtls_cert_fingerprint(
+    agent: Agent = Depends(require_master_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the agent's mTLS certificate fingerprint."""
+    agent.mtls_cert_fingerprint = None
+    await db.commit()
+    return {"agent_id": agent.id, "mtls_cert_fingerprint": None, "removed": True}
+
+
+
 

@@ -53,6 +53,12 @@ class Agent(Base):
     # Encrypted with the same Fernet key as user-level model_api_keys_encrypted.
     config_encrypted = Column(Text, nullable=True)
 
+    # Raw API key, encrypted at rest, used ONLY to rehydrate managed agent
+    # runtimes after a Hive restart (the hashed key can't be reversed). Kept in
+    # a dedicated column — separate from config_encrypted — so the raw key is
+    # never touched by config read/write paths and can't leak through them.
+    api_key_encrypted = Column(Text, nullable=True)
+
     # OpenClaw instance tracking — the UUID used when deploying to VPS.
     # Allows us to locate /opt/hive/openclaw-{instance_id[:8]} for reconfig.
     openclaw_instance_id = Column(String(36), nullable=True)
@@ -67,6 +73,14 @@ class Agent(Base):
     # entropy advantage over a UUID), it just narrows the scan from N → ~1 row.
     api_key_prefix = Column(String(16), nullable=True, index=True)
     api_key_hash = Column(String(255), nullable=False)
+
+    # Cryptographic identity — per-agent Ed25519 keypair for verifiable
+    # callback signing. The private key is returned to the owner ONCE at
+    # registration (or rotation); only the public key is persisted. Agents
+    # without a key (legacy, pre-rotation) fall back to the shared HMAC path.
+    signing_key_id = Column(String(40), nullable=True, index=True)
+    signing_public_key = Column(Text, nullable=True)
+    signing_key_created_at = Column(DateTime, nullable=True)
     
     # Status
     status = Column(String(20), default=AgentStatus.PENDING.value)
@@ -91,6 +105,7 @@ class Agent(Base):
     # Relationships
     skills = relationship("AgentSkill", back_populates="agent", cascade="all, delete-orphan")
     mcp_access = relationship("AgentMCPAccess", back_populates="agent", cascade="all, delete-orphan")
+    api_keys = relationship("AgentApiKey", back_populates="agent", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Agent {self.name} ({self.status})>"

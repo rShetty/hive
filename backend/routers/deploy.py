@@ -125,9 +125,11 @@ async def deploy_agent(
     # Create agent record first (to get ID)
     import secrets
     from auth import get_password_hash
-    
+    from services.agent_keys import new_signing_fields
+
     api_key = f"am-{secrets.token_urlsafe(32)}"
     api_key_hash = get_password_hash(api_key)
+    signing_fields, _deploy_priv = new_signing_fields()
 
     slug = agent_data.slug or Agent.generate_slug(agent_data.name)
 
@@ -142,6 +144,7 @@ async def deploy_agent(
         api_key_prefix=api_key[:16],
         api_key_hash=api_key_hash,
         status=AgentStatus.PENDING.value,
+        **signing_fields,
         version="1.0.0"
     )
     
@@ -425,6 +428,8 @@ async def deploy_openclaw_agent(
     api_key = f"am-{_secrets.token_urlsafe(32)}"
     slug = Agent.generate_slug(req.agent_name)
     port = await _get_next_available_port(db)
+    from services.agent_keys import new_signing_fields
+    _openclaw_signing_fields, _openclaw_priv = new_signing_fields()
 
     all_skill_names = list(dict.fromkeys(
         OPENCLAW_DEFAULT_SKILL_NAMES + req.extra_skill_names
@@ -444,6 +449,7 @@ async def deploy_openclaw_agent(
         status=AgentStatus.PENDING.value,
         version="1.0.0",
         internal_port=port,
+        **_openclaw_signing_fields,
     )
     db.add(agent)
     await db.commit()
@@ -556,11 +562,11 @@ async def deploy_openclaw_agent(
         agent.status = AgentStatus.ACTIVE.value
         agent.endpoint_url = result.get("url", "")
         agent.openclaw_instance_id = instance_id
-        # Persist the raw API key encrypted so config updates can restart with it
-        import json as _json
-        agent.config_encrypted = fernet.encrypt(
-            _json.dumps({"_hive_api_key": api_key}).encode()
-        ).decode()
+        # Persist the raw API key in its OWN encrypted column (not config_encrypted)
+        # so rehydration can restart the agent without re-issuing the key, while
+        # keeping the raw key out of the general config read/write paths.
+        from services.crypto import encrypt_json
+        agent.api_key_encrypted = encrypt_json({"_hive_api_key": api_key})
         await db.commit()
         
         registration_prompt = f"""You are {req.agent_name}, an OpenClaw agent registered with Hive.
@@ -656,6 +662,8 @@ async def deploy_hosted_agent(
     api_key_hash = _hash(api_key)
     slug = Agent.generate_slug(req.name)
     port = await _get_next_available_port(db)
+    from services.agent_keys import new_signing_fields
+    _hosted_signing_fields, _hosted_priv = new_signing_fields()
 
     agent = Agent(
         name=req.name,
@@ -671,6 +679,7 @@ async def deploy_hosted_agent(
         version="1.0.0",
         internal_port=port,
         endpoint_url=f"/agents/{'PLACEHOLDER'}",  # fixed after we know the id
+        **_hosted_signing_fields,
     )
     db.add(agent)
     await db.commit()
@@ -687,6 +696,10 @@ async def deploy_hosted_agent(
         "model_key": flat_model_key,
         "mcp_servers": mcp_list,
     }).encode()).decode()
+    # Store the raw API key in its dedicated encrypted column (separate from
+    # config) so the runtime can be rehydrated without re-issuing the key.
+    from services.crypto import encrypt_json
+    agent.api_key_encrypted = encrypt_json({"_hive_api_key": api_key})
 
     # Attach selected tools.
     for skill in resolved_skills:

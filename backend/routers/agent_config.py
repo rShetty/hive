@@ -93,10 +93,14 @@ async def _restart_with_config(agent: Agent, config: dict) -> dict:
     if not os.path.isfile(OPENCLAW_VPS_SSH_KEY_PATH):
         return {"success": False, "message": f"SSH key not found at {OPENCLAW_VPS_SSH_KEY_PATH}"}
 
-    # Reconstruct the raw API key — we only have the hash. We pass a placeholder;
-    # the container already has the real key and will keep using it unless we
-    # regenerate. Best UX: store the raw key encrypted too.
-    raw_api_key = _decrypt(agent.config_encrypted).get("_hive_api_key", "")
+    # Reconstruct the raw API key for the VPS container. Stored in a dedicated
+    # encrypted column (api_key_encrypted); fall back to the legacy location in
+    # config_encrypted for agents registered before the column was added.
+    raw_api_key = ""
+    if agent.api_key_encrypted:
+        raw_api_key = _decrypt(agent.api_key_encrypted).get("_hive_api_key", "")
+    if not raw_api_key:
+        raw_api_key = _decrypt(agent.config_encrypted).get("_hive_api_key", "")
 
     from services.openclaw_deployer import update_container_env
     return await update_container_env(

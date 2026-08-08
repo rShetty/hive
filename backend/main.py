@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from database import init_db
+from config import enforce_prod_config
 from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config, mcp, mcp_oauth, workflows, teams
 from services.skill_catalog import seed_skills
 from middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -30,6 +31,8 @@ from middleware.monitoring import MonitoringMiddleware, metrics
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
+    # Fail fast on missing security config in non-dev mode.
+    enforce_prod_config()
     # Startup
     await init_db()
     

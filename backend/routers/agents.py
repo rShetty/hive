@@ -205,9 +205,11 @@ async def get_agent_card(agent_id: str, db: AsyncSession = Depends(get_db)):
         "description": agent.description or agent.marketplace_description or "",
         "url": agent_base_url,
         "version": agent.version or "1.0.0",
-        # Authentication — Hive delegates carry a Bearer JWT
+        # Authentication — Hive-mediated access (dashboard proxy, delegation
+        # API) uses Bearer JWTs; agents self-identify to the marketplace via an
+        # X-API-Key header. Both schemes are advertised so A2A clients can pick.
         "authentication": {
-            "schemes": ["Bearer"],
+            "schemes": ["Bearer", "ApiKey"],
             "credentials": None,
         },
         # Streaming supported via SSE
@@ -229,6 +231,10 @@ async def get_agent_card(agent_id: str, db: AsyncSession = Depends(get_db)):
             "pricing_model": agent.pricing_model,
             "delegation_endpoint": f"{marketplace_url}/api/delegate",
             "marketplace_url": f"{marketplace_url}/api/marketplace/agents/{agent.id}",
+            "auth": {
+                "marketplace_proxy": "Bearer JWT (hive_token cookie / Authorization header)",
+                "agent_self": "X-API-Key header (issued once at registration)",
+            },
         },
     }
 

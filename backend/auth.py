@@ -1,5 +1,6 @@
 """Authentication utilities."""
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
@@ -11,6 +12,7 @@ from sqlalchemy import select
 
 from database import get_db
 from models.user import User
+from services import kvstore
 
 # Security configuration
 _DEV_MODE = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
@@ -44,6 +46,31 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "0" if _DEV_MODE else "1") not in ("0
 security = HTTPBearer()
 
 
+# ── JWT denylist (revocation) ───────────────────────────────────────────────
+# Revoked tokens are recorded by jti with a TTL matching the token's remaining
+# lifetime, so the denylist self-prunes and never grows unbounded. Backed by
+# Redis in prod (shared across instances) and in-memory in dev.
+_DENYLIST_PREFIX = "jwt:revoked:"
+
+
+async def revoke_token(payload: dict) -> None:
+    """Add a token's jti to the denylist for the remainder of its lifetime."""
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return
+    ttl = int(exp - datetime.now(timezone.utc).timestamp())
+    if ttl <= 0:
+        return
+    await kvstore.setex(f"{_DENYLIST_PREFIX}{jti}", "1", ttl)
+
+
+async def _is_revoked(jti: Optional[str]) -> bool:
+    if not jti:
+        return False
+    return await kvstore.exists(f"{_DENYLIST_PREFIX}{jti}")
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash using bcrypt."""
     password_bytes = plain_password.encode('utf-8')
@@ -64,7 +91,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode = data.copy()
     now = datetime.now(timezone.utc)
     expire = now + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire, "iss": JWT_ISSUER, "aud": JWT_AUDIENCE, "type": "access"})
+    to_encode.update({
+        "exp": expire, "iss": JWT_ISSUER, "aud": JWT_AUDIENCE,
+        "type": "access", "jti": uuid.uuid4().hex,
+    })
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -78,26 +108,46 @@ def create_refresh_token(user_id: str) -> str:
         "iss": JWT_ISSUER,
         "aud": JWT_AUDIENCE,
         "type": "refresh",
+        "jti": uuid.uuid4().hex,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def decode_refresh_token(token: str) -> str:
-    """Validate a refresh token and return the user_id (sub claim)."""
+def _decode_token(token: str) -> dict:
+    """Decode + validate a JWT, raising credentials_exception on failure."""
     try:
         payload = jwt.decode(
             token, SECRET_KEY, algorithms=[ALGORITHM],
-            options={"require": ["exp", "iss", "aud", "sub", "type"]},
+            options={"require": ["exp", "iss", "aud", "sub", "jti"]},
             issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
         )
-        if payload.get("type") != "refresh":
-            raise ValueError("Not a refresh token")
-        return payload["sub"]
-    except (JWTError, ValueError) as exc:
+        return payload
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+async def decode_refresh_token(token: str) -> str:
+    """Validate a refresh token and return the user_id (sub claim).
+
+    Checks the denylist so that a rotated/stolen refresh token is rejected on
+    reuse (refresh-token reuse detection).
+    """
+    payload = _decode_token(token)
+    if payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
-        ) from exc
+        )
+    if await _is_revoked(payload.get("jti")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token has been revoked",
+        )
+    return payload["sub"]
 
 
 async def get_current_user(
@@ -105,31 +155,31 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db)
 ) -> User:
     """Get current user from JWT token."""
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    
-    try:
-        token = credentials.credentials
-        payload = jwt.decode(
-            token, SECRET_KEY, algorithms=[ALGORITHM],
-            options={"require": ["exp", "iss", "aud", "sub"]},
-            issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
+    payload = _decode_token(credentials.credentials)
+    if await _is_revoked(payload.get("jti")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    
+    user_id: str = payload.get("sub")
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    
+
     if user is None:
-        raise credentials_exception
-    
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
 
 
@@ -156,16 +206,11 @@ async def get_user_from_query_token(
     )
     if not token:
         raise credentials_exception
-    try:
-        payload = jwt.decode(
-            token, SECRET_KEY, algorithms=[ALGORITHM],
-            options={"require": ["exp", "iss", "aud", "sub"]},
-            issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
-        )
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
+    payload = _decode_token(token)
+    if await _is_revoked(payload.get("jti")):
+        raise credentials_exception
+    user_id: str = payload.get("sub")
+    if user_id is None:
         raise credentials_exception
 
     result = await db.execute(select(User).where(User.id == user_id))

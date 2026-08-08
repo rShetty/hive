@@ -38,6 +38,7 @@ Read these when you need to change or extend a specific component.
 | [10 — Frontend](LLD/10-frontend.md) | Multi-page app, JS utilities, SSE consumption, auth flow |
 | [11 — Testing](LLD/11-testing.md) | Python E2E harnesses, Playwright suites, CI gating |
 | [12 — Configuration & Environment](LLD/12-config-env.md) | Every environment variable, defaults, and where they're consumed |
+| [13 — Agentic Identity](LLD/13-agentic-identity.md) | Per-agent Ed25519 keypairs, JWT revocation, scoped API keys, dual signing, replay protection |
 
 ---
 
@@ -60,6 +61,7 @@ Older top-level docs, reorganized into `docs/` for discoverability. These are **
 - **Adding an endpoint?** → [LLD/03](LLD/03-api-reference.md) + [LLD/01](LLD/01-backend.md).
 - **Changing agent hosting?** → [LLD/08](LLD/08-deploy-paths.md) + [LLD/04](LLD/04-agent-runtime.md).
 - **Touching delegation/team/workflow logic?** → [LLD/05](LLD/05-delegation-engine.md), [LLD/06](LLD/06-teams.md), [LLD/07](LLD/07-workflows.md).
-- **Security review?** → [HLD/05](HLD/05-security.md) + [LLD/12](LLD/12-config-env.md).
+- **Security review?** → [HLD/05](HLD/05-security.md) + [LLD/13](LLD/13-agentic-identity.md) + [LLD/12](LLD/12-config-env.md).
+- **Working on agent identity, auth, or signing?** → [LLD/13](LLD/13-agentic-identity.md).
 
 All documents include `file:line` references back into the source tree so claims can be verified directly.

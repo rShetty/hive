@@ -11,14 +11,33 @@ services:
       - HIVE_URL=http://localhost:8080
       - HIVE_DOMAIN=hive.rajeev.me
       - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY before starting}
+      - HIVE_SIGNING_SECRET=${HIVE_SIGNING_SECRET:?Set HIVE_SIGNING_SECRET before starting}
+      - REDIS_URL=redis://redis:6379/0
+      - DEV_MODE=0
+      - COOKIE_SECURE=1
+      - ALLOWED_ORIGINS=https://hive.rajeev.me
       - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-openclaw/openclaw:latest}
     volumes:
       - ./data:/app/data
       # WARNING: Docker socket grants host-level access. Use a socket proxy in production.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - redis
     restart: unless-stopped
     networks:
       - agent-marketplace
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - agent-marketplace
+
+volumes:
+  redis-data:
 
 networks:
   agent-marketplace:

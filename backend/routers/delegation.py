@@ -41,7 +41,8 @@ from schemas import (
     TokenEstimateRequest,
     TokenEstimateResponse,
 )
-from routers.agent_api import get_agent_from_api_key
+from routers.agent_api import get_agent_from_api_key, require_scopes
+from models.agent_api_key import SCOPE_COMPLETE, SCOPE_DELEGATE
 from routers.wallet import get_or_create_wallet
 from services.agent_client import (
     get_agent_client,
@@ -50,6 +51,7 @@ from services.agent_client import (
     AgentClientError,
 )
 from services import delegation_hub
+from services import kvstore
 from middleware.rate_limit import limiter, RATE_LIMITS
 from auth import get_current_active_user, get_user_from_query_token
 
@@ -74,6 +76,11 @@ MAX_DELEGATION_DEPTH = 5
 
 # HMAC key for signing outbound delegation payloads sent to agents
 HIVE_SIGNING_SECRET = os.getenv("HIVE_SIGNING_SECRET", "change-me-in-production")
+
+# Replay protection: reject callbacks whose timestamp skews too far from now,
+# and refuse to process the same callback twice (nonce keyed on delegation_id).
+_CALLBACK_MAX_SKEW_SECONDS = 300  # 5 minutes
+_CALLBACK_NONCE_TTL = 600         # 10 minutes
 
 
 def _sign_payload(body: bytes, timestamp: str = "") -> str:
@@ -530,7 +537,7 @@ async def request_delegation(
     request: Request,
     delegation: DelegationRequest,
     background_tasks: BackgroundTasks,
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_DELEGATE)),
     db: AsyncSession = Depends(get_db),
 ):
     """Agent-to-agent delegation (same async flow as /user-request)."""
@@ -939,7 +946,7 @@ async def complete_delegation(
     request: Request,
     delegation_id: str,
     completion: DelegationComplete,
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_COMPLETE)),
     db: AsyncSession = Depends(get_db),
 ):
     """Executing agent marks delegation complete (authenticated by API key)."""
@@ -1020,7 +1027,7 @@ async def complete_delegation(
 async def fail_delegation(
     delegation_id: str,
     reason: str,
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_COMPLETE)),
     db: AsyncSession = Depends(get_db),
 ):
     """Executing agent marks delegation failed. Refunds escrow."""
@@ -1058,20 +1065,65 @@ async def fail_delegation(
     }
 
 
-def _verify_callback_signature(request: Request, body: bytes) -> None:
-    """Validate HMAC-SHA256 signature on inbound agent callbacks."""
+async def _verify_callback_signature(request: Request, body: bytes, delegation_id: str) -> None:
+    """Validate the signature on an inbound agent callback and reject replays.
+
+    Accepts either the new per-agent Ed25519 signature (preferred) or the
+    legacy HMAC-SHA256 signature (transition window). In both cases:
+      * the timestamp must be within ``_CALLBACK_MAX_SKEW_SECONDS`` of now, and
+      * the callback must not have been seen before (nonce store).
+
+    The replay-nonce is keyed on ``delegation_id`` — a delegation can be
+    completed exactly once, so any second callback for it (replay or re-send)
+    is rejected here regardless of DB state.
+    """
+    import time as _time
+    from services.agent_keys import verify_callback_signature as verify_ed25519
+
     sig_header = request.headers.get("X-Hive-Signature", "")
     ts_header = request.headers.get("X-Hive-Timestamp", "")
+    ed25519_header = request.headers.get("X-Hive-Signature-Ed25519", "")
+    key_id_header = request.headers.get("X-Hive-Key-Id", "")
 
-    if not sig_header or not ts_header:
+    if not sig_header and not ed25519_header:
         raise HTTPException(
             status_code=401,
-            detail="Missing X-Hive-Signature or X-Hive-Timestamp header",
+            detail="Missing signature headers",
         )
+    if not ts_header:
+        raise HTTPException(status_code=401, detail="Missing X-Hive-Timestamp header")
 
-    expected = f"sha256={_sign_payload(body, ts_header)}"
-    if not _hmac.compare_digest(sig_header, expected):
+    # ---- timestamp freshness ----
+    try:
+        ts_val = int(ts_header)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid X-Hive-Timestamp header")
+    skew = abs(int(_time.time()) - ts_val)
+    if skew > _CALLBACK_MAX_SKEW_SECONDS:
+        raise HTTPException(status_code=401, detail="Callback timestamp outside allowed window")
+
+    # ---- signature verification (Ed25519 preferred, fall back to HMAC) ----
+    sig_ok = False
+    if ed25519_header and key_id_header:
+        sig_ok = await verify_ed25519(
+            delegation_id=delegation_id,
+            key_id=key_id_header,
+            timestamp=ts_header,
+            body=body,
+            signature=ed25519_header,
+        )
+    if not sig_ok and sig_header:
+        expected = f"sha256={_sign_payload(body, ts_header)}"
+        sig_ok = _hmac.compare_digest(sig_header, expected)
+    if not sig_ok:
         raise HTTPException(status_code=401, detail="Invalid callback signature")
+
+    # ---- replay protection: first caller wins ----
+    nonce_set = await kvstore.set_if_absent(
+        f"cb:{delegation_id}", ts_header, _CALLBACK_NONCE_TTL,
+    )
+    if not nonce_set:
+        raise HTTPException(status_code=409, detail="Callback already processed")
 
 
 @router.post("/{delegation_id}/callback")
@@ -1084,7 +1136,7 @@ async def delegation_callback(
 ):
     """Async callback: executing agent reports completion, signed with HMAC."""
     raw_body = await request.body()
-    _verify_callback_signature(request, raw_body)
+    await _verify_callback_signature(request, raw_body, delegation_id)
 
     result = await db.execute(
         select(Transaction).where(Transaction.id == delegation_id)

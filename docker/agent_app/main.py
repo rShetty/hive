@@ -2,8 +2,11 @@
 import asyncio
 import os
 import json
+import hmac
+import hashlib
+import time
 from datetime import datetime
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -26,6 +29,56 @@ except Exception:
 HIVE_URL = os.getenv("HIVE_URL", "")
 HIVE_API_KEY = os.getenv("HIVE_API_KEY", "")
 INSTANCE_ID = os.getenv("INSTANCE_ID", "")
+
+
+def _signing_secret() -> str:
+    """Read the Hive signing secret from env or secret file."""
+    fpath = os.getenv("HIVE_SIGNING_SECRET_FILE")
+    if fpath and os.path.isfile(fpath):
+        try:
+            with open(fpath) as fh:
+                return fh.read().strip()
+        except OSError:
+            pass
+    return os.getenv("HIVE_SIGNING_SECRET", "")
+
+
+# Max acceptable timestamp skew on inbound delegation payloads (seconds).
+_HIVE_MAX_SKEW = 300
+
+
+def _verify_hive_signature(request: Request, body: bytes) -> None:
+    """Verify the HMAC-SHA256 signature on an inbound Hive delegation payload.
+
+    Fails closed (401) when a signature header is present. If no
+    HIVE_SIGNING_SECRET is configured the check is skipped with a warning —
+    this preserves backward compatibility for runtimes that haven't been
+    redeployed with the secret injected. Prod deploys inject the secret.
+    """
+    secret = _signing_secret()
+    sig_header = request.headers.get("X-Hive-Signature", "")
+    ts_header = request.headers.get("X-Hive-Timestamp", "")
+    if not sig_header and not ts_header:
+        # No signature headers — pre-signing caller. Allow only when no secret
+        # is configured (dev/legacy); otherwise reject.
+        if secret and secret != "change-me-in-production":
+            raise HTTPException(status_code=401, detail="Missing signature headers")
+        return
+    if not secret or secret == "change-me-in-production":
+        # Secret not configured: cannot verify. Allow with a warning rather than
+        # breaking legacy runtimes.
+        _log_activity("warning", "Inbound payload not verified — HIVE_SIGNING_SECRET not configured")
+        return
+    try:
+        ts_val = int(ts_header)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid X-Hive-Timestamp header")
+    if abs(int(time.time()) - ts_val) > _HIVE_MAX_SKEW:
+        raise HTTPException(status_code=401, detail="Timestamp outside allowed window")
+    message = f"{ts_header}.".encode() + body
+    expected = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig_header, expected):
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
 # MCP servers configured for this agent (list of {name, url, description, headers})
 try:
@@ -660,18 +713,28 @@ async def invoke(request: Dict):
 
 
 @app.post("/delegate")
-async def delegate(request: Dict):
+async def delegate(request: Request):
     """Hive delegation endpoint.
 
     Supports two modes:
     - sync (default for team orchestration): runs task inline and returns result
     - async: returns ``in_progress`` immediately, runs in background, calls back
+
+    The inbound payload is HMAC-signed by Hive (X-Hive-Signature); we verify it
+    before acting on the task.
     """
-    delegation_id = request.get("delegation_id", "unknown")
-    task = request.get("task", "")
-    callback_url = request.get("callback_url")
-    context = request.get("context") or {}
-    sync = request.get("sync", False)
+    raw = await request.body()
+    _verify_hive_signature(request, raw)
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    delegation_id = payload.get("delegation_id", "unknown")
+    task = payload.get("task", "")
+    callback_url = payload.get("callback_url")
+    context = payload.get("context") or {}
+    sync = payload.get("sync", False)
 
     _log_activity("delegation", f"Task: {str(task)[:80]}", {"delegation_id": delegation_id})
 

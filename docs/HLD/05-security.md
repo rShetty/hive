@@ -6,28 +6,32 @@ Hive runs a multi-tenant platform where untrusted external agents execute code a
 
 ### Humans — JWT (HS256) + bcrypt
 - `SECRET_KEY` env signs JWTs (required; `DEV_MODE=1` allows an insecure default for local dev only).
-- **Access token**: 15 min, `type:"access"`, carries `sub` (user id), `iss`, `aud`.
-- **Refresh token**: 30 days, `type:"refresh"`, stored in an httpOnly `hive_refresh` cookie (path `/api/auth`). Rotated on each `/refresh` (sliding expiry). `COOKIE_SECURE` toggles Secure flag (off in dev, on in prod).
+- **Access token**: 15 min, `type:"access"`, carries `sub` (user id), `iss`, `aud`, `jti` (JWT ID for revocation).
+- **Refresh token**: 30 days, `type:"refresh"`, stored in an httpOnly `hive_refresh` cookie (path `/api/auth`). Rotated on each `/refresh` (sliding expiry); old `jti` revoked on rotation (reuse detection). `COOKIE_SECURE` toggles Secure flag (off in dev, on in prod).
 - A second non-httpOnly `hive_token` cookie (path `/`) holds the access token so the agent-dashboard proxy can read it; the SPA reads access tokens from `localStorage` for `Authorization: Bearer`.
-- Dependencies: `get_current_user`, `get_current_active_user`, `get_current_admin_user`, `get_user_from_query_token` (for SSE, since `EventSource` can't set headers).
+- Dependencies: `get_current_user`, `get_current_active_user`, `get_current_admin_user`, `get_user_from_query_token` (for SSE, since EventSource can't set headers). All check the Redis-backed `jti` denylist.
 - JWKS endpoint (`/.well-known/jwks.json`) documents that HS256 is symmetric (no publishable key).
-- **No server-side revocation** — stateless JWT. Logout only clears the refresh cookie. Short access-token lifetime is the mitigation.
+- **Revocation**: logout revokes both access + refresh tokens via Redis denylist (`jti` with TTL = remaining token lifetime). See [LLD/13](../LLD/13-agentic-identity.md#6-jwt-revocation-denylist).
 
-### Agents — API keys
-- Format `am-{secrets.token_urlsafe(32)}`.
+### Agents — API keys + Ed25519 signing keys
+- Master API key format `am-{secrets.token_urlsafe(32)}`.
 - Stored as `api_key_prefix` (first 16 chars, indexed for O(1)-ish lookup) + `api_key_hash` (bcrypt).
 - Full key shown **only once** at registration / recovery.
-- Recovery via one-time `health_check_token`, rate-limited 5/5min per IP:agent.
-- `get_agent_from_api_key` dep does prefix lookup → bcrypt verify.
+- Recovery via one-time `health_check_token`, rate-limited 5/5min per IP:agent (Redis-backed).
+- `get_agent_from_api_key` dep does prefix lookup → bcrypt verify. Falls through to scoped-key lookup (see below).
+- **Scoped API keys**: agents can hold additional keys with restricted scopes (`heartbeat`, `delegate`, `complete`, `profile:read`, `profile:write`). Master key always grants `*`. See [LLD/13](../LLD/13-agentic-identity.md#22-scoped-api-keys).
+- **Ed25519 keypair**: each agent gets a per-agent signing keypair at registration. The private key is returned once; the public key is stored on the Agent row. Used to sign async completion callbacks cryptographically. See [LLD/13](../LLD/13-agentic-identity.md#3-per-agent-ed25519-signing).
 
-## HMAC-signed delegation payloads
+## Delegation payload signing (dual mode)
 
-Outbound (Hive → agent) and inbound (agent → Hive callback) delegation payloads are HMAC-SHA256 signed with `HIVE_SIGNING_SECRET`:
+Outbound (Hive → agent) and inbound (agent → Hive callback) delegation payloads are signed. Hive accepts **both** Ed25519 (preferred) and legacy HMAC-SHA256 signatures during the transition window:
 
-- Outbound (`services/agent_client.py:30`): headers `X-Hive-Signature: sha256={hmac(timestamp.body)}`, `X-Hive-Timestamp`, `X-Hive-Delegation-ID`.
-- Inbound (`routers/delegation.py:1061`): `_verify_callback_signature` checks `X-Hive-Signature` + `X-Hive-Timestamp`, timing-safe `hmac.compare_digest`.
+- **Outbound** (`services/agent_client.py:30`): HMAC-SHA256 with `HIVE_SIGNING_SECRET` → headers `X-Hive-Signature: sha256={hmac(timestamp.body)}`, `X-Hive-Timestamp`, `X-Hive-Delegation-ID`. (Will be upgraded to asymmetric in a future phase.)
+- **Inbound** (`routers/delegation.py:1095`): `_verify_callback_signature` checks Ed25519 first (`X-Hive-Signature-Ed25519` + `X-Hive-Key-Id`), falls back to legacy HMAC (`X-Hive-Signature`). Also enforces a 5-min timestamp freshness window and a Redis-backed replay nonce (first-caller-wins per `delegation_id`).
 
-This lets the `/callback` endpoint authenticate async completions without an API key in the request (the signature is the proof).
+The agent runtime (`docker/agent_app/main.py`) verifies the inbound HMAC on `/delegate` payloads — fail-closed when `HIVE_SIGNING_SECRET` is configured, permissive in dev.
+
+This lets the `/callback` endpoint authenticate async completions without an API key in the request (the signature is the proof). Per-agent Ed25519 keys ensure no agent can forge another's callback. See [LLD/13](../LLD/13-agentic-identity.md#4-dual-signing--the-transition-path).
 
 ## Encryption at rest
 
@@ -73,7 +77,9 @@ For MCP servers requiring OAuth, `routers/mcp_oauth.py` implements a connect flo
 
 ## Rate limiting
 
-`slowapi` limiter, fixed-window, in-memory storage. Per-endpoint-class limits (`middleware/rate_limit.py`): auth_login 120/min, auth_register 600/h, agent_register/invite 50/h, delegate_request/complete/callback 60/min, marketplace_list 100/min, wallet_transactions 30/min, review_create 30/h, etc. Teams define their own `TEAM_RATE_LIMITS` (run 30/h, stream 120/h). 429 → JSON.
+`slowapi` limiter, fixed-window. Storage is Redis (`REDIS_URL`) in production for distributed enforcement; falls back to in-memory in dev. Per-endpoint-class limits (`middleware/rate_limit.py`): auth_login 120/min, auth_register 600/h, agent_register/invite 50/h, delegate_request/complete/callback 60/min, marketplace_list 100/min, wallet_transactions 30/min, review_create 30/h, etc. Teams define their own `TEAM_RATE_LIMITS` (run 30/h, stream 120/h). 429 → JSON.
+
+The credential-recovery rate limiter (`routers/agent_api.py`) uses the Redis-backed `kvstore.fixed_window_count` primitive directly, so it's shared across instances and survives restarts.
 
 ## Security headers
 
@@ -94,8 +100,19 @@ See [HLD/07 — Deployment](07-deployment.md).
 
 ## Known gaps / notes
 
-- **Stateless JWT** — no revocation list; a stolen access token is valid until expiry (15 min). Refresh-token rotation mitigates replay but there's no detection of reuse.
-- **`HIVE_SIGNING_SECRET` default `change-me-in-production`** — must be overridden in prod.
 - **Local subprocess secrets** live in `/tmp/hive-secrets/` (mode 0600) — fine for dev, not for multi-tenant prod.
 - **In-process hub** is not durable across restarts — events in flight when Hive restarts are lost (DB-persisted `DelegationLog` survives; the queue doesn't).
 - **Three agent runtimes disagree on the `/fail` callback contract** — `main.py` sends `reason` as a query param; `main_crewai.py` / `main_langchain.py` send `{delegation_id, error}` as JSON body. See [LLD/04](../LLD/04-agent-runtime.md#known-inconsistencies).
+
+## What's been hardened (see [LLD/13 — Agentic Identity](../LLD/13-agentic-identity.md))
+
+The following previously-listed gaps have been addressed:
+
+- ✅ **Stateless JWT** — now has a Redis-backed `jti` denylist; logout revokes access + refresh tokens; refresh rotation detects reuse.
+- ✅ **`HIVE_SIGNING_SECRET` default** — prod fail-fast (`config.enforce_prod_config`) refuses to boot with the default; per-agent Ed25519 keypairs supplement it (dual mode).
+- ✅ **Shared signing secret** — per-agent Ed25519 keypairs issued at registration; callbacks verified against the agent's own public key. Legacy HMAC retained for backward compatibility.
+- ✅ **Callback replay** — 5-min timestamp window + Redis nonce store (first-caller-wins).
+- ✅ **In-memory rate limiting** — slowapi now uses Redis storage in prod; recovery limiter uses `kvstore`.
+- ✅ **Raw API key in config_encrypted** — moved to dedicated `api_key_encrypted` column.
+- ✅ **Agent runtime doesn't verify signatures** — `/delegate` now HMAC-verifies inbound payloads (fail-closed in prod).
+- ✅ **No scoped API keys** — `AgentApiKey` table + `require_scopes()` dependency; master key retains full access.

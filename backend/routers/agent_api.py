@@ -1,5 +1,6 @@
 """Agent-only API routes (registration, heartbeat)."""
 import hmac
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Header, Query
@@ -9,6 +10,16 @@ from sqlalchemy.orm import selectinload
 
 from database import get_db
 from models.agent import Agent, AgentStatus, AgentType
+from models.agent_api_key import (
+    AgentApiKey,
+    SCOPE_ALL,
+    SCOPE_HEARTBEAT,
+    SCOPE_DELEGATE,
+    SCOPE_COMPLETE,
+    SCOPE_PROFILE_READ,
+    SCOPE_PROFILE_WRITE,
+    ALL_SCOPES,
+)
 from models.skill import Skill
 from models.agent_skill import AgentSkill
 from models.user import User
@@ -28,6 +39,16 @@ from services.skill_discovery import discover_and_sync_skills
 
 router = APIRouter(prefix="/api/agent", tags=["agent-api"])
 
+# Scopes granted by the key used in the current request. Master key → ["*"].
+# Populated by get_agent_from_api_key; read by require_scopes().
+_current_scopes: ContextVar[list[str]] = ContextVar("current_scopes", default=["*"])
+# True only when the request authenticated with the agent's master key.
+_current_key_is_master: ContextVar[bool] = ContextVar("current_key_is_master", default=False)
+
+
+def get_current_scopes() -> list[str]:
+    return _current_scopes.get()
+
 
 async def get_agent_from_api_key(
     x_api_key: str = Header(..., alias="X-API-Key"),
@@ -36,26 +57,80 @@ async def get_agent_from_api_key(
     """
     Dependency to get agent from API key header.
 
+    Accepts either the agent's master key (bcrypt-verified against
+    Agent.api_key_hash, grants all scopes) or a scoped key (bcrypt-verified
+    against AgentApiKey.key_hash, grants only its listed scopes).
+
     Uses a stored key-prefix to narrow the candidate set to ≈1 row before
     running the expensive bcrypt verify, giving O(1) amortised lookup.
     """
     from auth import verify_password
 
-    # Keys are formatted "am-<token>" — the prefix is the first 16 chars.
     prefix = x_api_key[:16]
+
+    # 1. Try the master key.
     result = await db.execute(
         select(Agent).where(Agent.api_key_prefix == prefix)
     )
-    candidates = result.scalars().all()
-
-    for agent in candidates:
+    for agent in result.scalars().all():
         if verify_password(x_api_key, agent.api_key_hash):
+            _current_scopes.set([SCOPE_ALL])
+            _current_key_is_master.set(True)
+            return agent
+
+    # 2. Fall back to scoped keys.
+    result = await db.execute(
+        select(AgentApiKey).where(AgentApiKey.key_prefix == prefix)
+    )
+    for scoped in result.scalars().all():
+        if scoped.revoked:
+            continue
+        if verify_password(x_api_key, scoped.key_hash):
+            agent_result = await db.execute(
+                select(Agent).where(Agent.id == scoped.agent_id)
+            )
+            agent = agent_result.scalar_one_or_none()
+            if agent is None:
+                continue
+            scoped.last_used = datetime.now(timezone.utc)
+            await db.commit()
+            _current_scopes.set(list(scoped.scopes or []))
+            _current_key_is_master.set(False)
             return agent
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid API key"
     )
+
+
+def require_scopes(*required: str):
+    """FastAPI dependency factory: require any of ``required`` scopes.
+
+    Master key (scopes == ["*"]) always passes. Scoped keys must hold at least
+    one of the required scopes (or "*").
+    """
+    async def _check(agent: Agent = Depends(get_agent_from_api_key)):
+        scopes = set(get_current_scopes())
+        if SCOPE_ALL in scopes:
+            return agent
+        if not any(s in scopes for s in required):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing required scope(s): {', '.join(required)}",
+            )
+        return agent
+    return _check
+
+
+async def require_master_key(agent: Agent = Depends(get_agent_from_api_key)) -> Agent:
+    """Dependency: only the agent's master key may call this endpoint."""
+    if not _current_key_is_master.get():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Master API key required for this operation",
+        )
+    return agent
 
 
 @router.post("/register", response_model=AgentRegistrationResponse)
@@ -74,11 +149,16 @@ async def register_agent(
     Returns the FULL API key — save it immediately; it won’t be shown again.
     """
     import secrets
+    from services.agent_keys import new_signing_fields
 
     api_key = f"am-{secrets.token_urlsafe(32)}"
     api_key_hash = get_password_hash(api_key)
     health_check_token = await generate_health_check_token()
     slug = agent_data.slug or Agent.generate_slug(agent_data.name)
+
+    # Per-agent Ed25519 keypair for verifiable callback signing. The private key
+    # is returned ONCE below; only the public key is stored.
+    signing_fields, private_pem = new_signing_fields()
 
     # Determine agent type
     agent_type = agent_data.agent_type or AgentType.MANAGED.value
@@ -106,6 +186,7 @@ async def register_agent(
         health_check_token=health_check_token,
         owner_id=current_user.id,
         version="1.0.0",
+        **signing_fields,
     )
     
     db.add(agent)
@@ -142,12 +223,14 @@ async def register_agent(
         "health_check_endpoint": f"/agents/{agent.id}/health",
         "health_check_token": health_check_token,
         "status": agent.status,
+        "signing_key_id": signing_fields["signing_key_id"],
+        "signing_private_key": private_pem,
     }
 
 
 @router.post("/heartbeat", response_model=AgentHeartbeatResponse)
 async def agent_heartbeat(
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_HEARTBEAT)),
     db: AsyncSession = Depends(get_db),
     heartbeat: Optional[AgentHeartbeatRequest] = Body(default=None)
 ):
@@ -173,7 +256,7 @@ async def agent_heartbeat(
 
 @router.get("/me")
 async def get_agent_profile(
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_PROFILE_READ)),
     db: AsyncSession = Depends(get_db)
 ):
     """Get current agent's profile."""
@@ -211,7 +294,7 @@ async def get_agent_profile(
 @router.put("/me")
 async def update_agent_profile(
     agent_update: AgentProfileUpdate,
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_PROFILE_WRITE)),
     db: AsyncSession = Depends(get_db)
 ):
     """Update current agent's profile."""
@@ -236,7 +319,7 @@ async def update_agent_profile(
 async def update_agent_visibility(
     is_public: bool | None = Query(default=None, description="Make agent public/private"),
     visibility: VisibilityUpdate | None = None,
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_PROFILE_WRITE)),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -283,9 +366,10 @@ async def update_agent_visibility(
     }
 
 
-# ---- In-memory rate limiter for credential recovery ----
-import time as _time
-_recovery_attempts: dict[str, list[float]] = {}  # key -> list of timestamps
+# ---- Distributed rate limiter for credential recovery ----
+# Uses the shared Redis-backed kvstore so limits are enforced across instances
+# and survive restarts. Falls back to in-memory in dev.
+from services import kvstore
 _RATE_LIMIT_WINDOW = 300  # 5 minutes
 _RATE_LIMIT_MAX = 5  # max attempts per window
 
@@ -293,18 +377,16 @@ _RATE_LIMIT_MAX = 5  # max attempts per window
 _SELF_REG_LIMIT_WINDOW = 3600  # 1 hour
 _SELF_REG_LIMIT_MAX = 10  # max 10 registrations per IP per hour
 
-def _check_rate_limit(key: str) -> None:
-    now = _time.time()
-    attempts = _recovery_attempts.get(key, [])
-    # Prune old entries
-    attempts = [t for t in attempts if now - t < _RATE_LIMIT_WINDOW]
-    if len(attempts) >= _RATE_LIMIT_MAX:
+
+async def _check_rate_limit(key: str) -> None:
+    count, allowed = await kvstore.fixed_window_count(
+        f"rl:{key}", _RATE_LIMIT_WINDOW, _RATE_LIMIT_MAX
+    )
+    if not allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many recovery attempts. Try again later.",
         )
-    attempts.append(now)
-    _recovery_attempts[key] = attempts
 
 
 @router.post("/recover-credentials")
@@ -318,7 +400,7 @@ async def recover_credentials(
     Recover agent credentials using health check token.
     This is a one-time recovery - generates a NEW API key.
     """
-    _check_rate_limit(f"{request.client.host}:{agent_id}")
+    await _check_rate_limit(f"{request.client.host}:{agent_id}")
 
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
@@ -357,9 +439,136 @@ async def recover_credentials(
     }
 
 
+@router.post("/rotate-signing-key")
+async def rotate_signing_key(
+    agent: Agent = Depends(require_master_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rotate the agent's Ed25519 signing keypair.
+
+    Generates a fresh keypair, stores the new public key + key_id, and returns
+    the new private key ONCE. The previous key immediately stops being valid
+    for callback verification. Existing in-flight callbacks signed with the old
+    key will be rejected — callers should drain pending work before rotating.
+    """
+    from services.agent_keys import new_signing_fields
+
+    signing_fields, private_pem = new_signing_fields()
+    agent.signing_key_id = signing_fields["signing_key_id"]
+    agent.signing_public_key = signing_fields["signing_public_key"]
+    agent.signing_key_created_at = signing_fields["signing_key_created_at"]
+    await db.commit()
+
+    print(f"🔑 Signing key rotated for agent: {agent.name} (ID: {agent.id})")
+
+    return {
+        "agent_id": agent.id,
+        "signing_key_id": signing_fields["signing_key_id"],
+        "signing_private_key": private_pem,
+        "message": "New signing key generated. Save the private key immediately - it won't be shown again!",
+    }
+
+
+# ── Scoped API key management ────────────────────────────────────────────────
+
+@router.post("/api-keys")
+async def create_scoped_api_key(
+    body: dict = Body(...),
+    agent: Agent = Depends(require_master_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Issue a new scoped API key for this agent.
+
+    Body: ``{"name": "ci-runner", "scopes": ["heartbeat", "complete"]}``.
+    The full key is returned ONCE (like the master key at registration).
+    Only the agent's master key may call this.
+    """
+    import secrets
+    name = (body or {}).get("name") or "scoped-key"
+    requested = (body or {}).get("scopes") or []
+    invalid = [s for s in requested if s not in ALL_SCOPES]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown scope(s): {', '.join(invalid)}. Valid: {sorted(ALL_SCOPES)}",
+        )
+    if not requested:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one scope is required",
+        )
+
+    raw_key = f"am-{secrets.token_urlsafe(32)}"
+    scoped = AgentApiKey(
+        agent_id=agent.id,
+        name=name[:100],
+        key_prefix=raw_key[:16],
+        key_hash=get_password_hash(raw_key),
+        scopes=list(requested),
+    )
+    db.add(scoped)
+    await db.commit()
+    await db.refresh(scoped)
+
+    print(f"🎫 Scoped key issued for agent {agent.name}: name={name} scopes={requested}")
+
+    return {
+        "id": scoped.id,
+        "name": scoped.name,
+        "scopes": scoped.scopes,
+        "api_key": raw_key,
+        "message": "Save this key immediately - it won't be shown again!",
+    }
+
+
+@router.get("/api-keys")
+async def list_scoped_api_keys(
+    agent: Agent = Depends(require_master_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """List this agent's scoped API keys (metadata only; no secrets)."""
+    result = await db.execute(
+        select(AgentApiKey).where(AgentApiKey.agent_id == agent.id)
+    )
+    return {
+        "agent_id": agent.id,
+        "keys": [
+            {
+                "id": k.id,
+                "name": k.name,
+                "scopes": k.scopes or [],
+                "revoked": k.revoked,
+                "last_used": k.last_used.isoformat() if k.last_used else None,
+                "created_at": k.created_at.isoformat() if k.created_at else None,
+            }
+            for k in result.scalars().all()
+        ],
+    }
+
+
+@router.delete("/api-keys/{key_id}")
+async def revoke_scoped_api_key(
+    key_id: str,
+    agent: Agent = Depends(require_master_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke a scoped API key. The key immediately stops working."""
+    result = await db.execute(
+        select(AgentApiKey).where(
+            AgentApiKey.id == key_id, AgentApiKey.agent_id == agent.id
+        )
+    )
+    scoped = result.scalar_one_or_none()
+    if not scoped:
+        raise HTTPException(status_code=404, detail="Scoped key not found")
+    scoped.revoked = True
+    await db.commit()
+    return {"id": scoped.id, "revoked": True}
+
+
 @router.post("/discover-skills")
 async def discover_skills(
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_PROFILE_WRITE)),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -380,7 +589,7 @@ async def discover_skills(
 
 @router.get("/skills")
 async def get_discovered_skills(
-    agent: Agent = Depends(get_agent_from_api_key),
+    agent: Agent = Depends(require_scopes(SCOPE_PROFILE_READ)),
     db: AsyncSession = Depends(get_db)
 ):
     """Get the agent's current discovered skills."""

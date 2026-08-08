@@ -10,13 +10,14 @@ from models.user import User
 from schemas import UserCreate, UserResponse, Token, LoginRequest
 from auth import (
     verify_password, get_password_hash, create_access_token, get_current_active_user,
-    create_refresh_token, decode_refresh_token,
+    create_refresh_token, decode_refresh_token, revoke_token, _decode_token,
     REFRESH_COOKIE_NAME, REFRESH_TOKEN_EXPIRE_DAYS, COOKIE_SECURE,
 )
 from middleware.rate_limit import limiter, RATE_LIMITS
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 security = HTTPBearer()
+_optional_security = HTTPBearer(auto_error=False)
 
 
 @router.post("/register", response_model=UserResponse)
@@ -118,14 +119,19 @@ async def refresh_access_token(
     if not hive_refresh:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No refresh token")
 
-    user_id = decode_refresh_token(hive_refresh)  # raises 401 if invalid/expired
+    # Decode the old refresh token to capture its jti for revocation (rotation).
+    # decode_refresh_token is async and also enforces the denylist, so a reused
+    # / stolen refresh token is rejected here.
+    old_payload = _decode_token(hive_refresh)
+    user_id = await decode_refresh_token(hive_refresh)  # raises 401 if invalid/revoked
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
-    # Rotate: issue fresh refresh token (sliding window)
+    # Rotate: revoke the old refresh token and issue fresh tokens (sliding window).
+    await revoke_token(old_payload)
     new_access_token = create_access_token(data={"sub": user.id})
     new_refresh_token = create_refresh_token(user.id)
 
@@ -152,9 +158,32 @@ async def refresh_access_token(
 
 
 @router.post("/logout")
-async def logout(response: Response):
-    """Clear the refresh token cookie."""
+async def logout(
+    response: Response,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_security),
+    hive_refresh: Optional[str] = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
+):
+    """Revoke the refresh + access tokens and clear auth cookies.
+
+    Both tokens are added to the denylist for the remainder of their lifetimes,
+    so a stolen token can't be reused after the user logs out.
+    """
+    # Revoke refresh token if present.
+    if hive_refresh:
+        try:
+            await revoke_token(_decode_token(hive_refresh))
+        except HTTPException:
+            pass  # malformed/expired — nothing to revoke
+
+    # Revoke access token from the Authorization header if present.
+    if credentials and credentials.credentials:
+        try:
+            await revoke_token(_decode_token(credentials.credentials))
+        except HTTPException:
+            pass
+
     response.delete_cookie(key=REFRESH_COOKIE_NAME, path="/api/auth")
+    response.delete_cookie(key="hive_token", path="/")
     return {"message": "Logged out"}
 
 

@@ -20,7 +20,8 @@ Every environment variable Hive consumes, its default, and where it's read.
 |-----|---------|-------|---------|
 | `SECRET_KEY` | (required; insecure default only if `DEV_MODE=1`) | `auth.py:18` | JWT HS256 signing |
 | `ENCRYPTION_KEY` | (ephemeral if unset) | `crypto.py:8`, `deploy.py:59`, `agent_config.py:31` | Fernet at-rest encryption. **Required in prod** (`docker-compose.prod.yml`) |
-| `HIVE_SIGNING_SECRET` | `change-me-in-production` | `delegation.py:76`, `agent_client.py:27` | HMAC for delegation payloads. **Must override in prod** |
+| `HIVE_SIGNING_SECRET` | `change-me-in-production` | `config.py:16`, `delegation.py:77`, `agent_client.py:27` | HMAC for delegation payloads. **Must override in prod** (enforced by `config.enforce_prod_config`). Superseded by per-agent Ed25519 keys but retained for dual-signing transition. |
+| `REDIS_URL` | (required in prod) | `config.py:20`, `kvstore.py:18`, `rate_limit.py:10` | Redis for JWT denylist, distributed rate limits, callback replay-nonce store. In-memory fallback in dev only. |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | `auth.py:38` | JWT access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | `auth.py:39` | refresh token lifetime |
 | `COOKIE_SECURE` | dev-False / prod-True | `auth.py:42` | Secure flag on cookies |
@@ -77,7 +78,7 @@ Per-user keys are stored Fernet-encrypted in `User.model_api_keys_encrypted` and
 
 ## Rate limits (`middleware/rate_limit.py`)
 
-`slowapi.Limiter`, fixed-window, in-memory storage, `default_limits=["200/minute"]`.
+`slowapi.Limiter`, fixed-window. Storage is Redis (`REDIS_URL`) in production; in-memory fallback in dev. `default_limits=["200/minute"]`.
 
 | Limit | Value |
 |-------|-------|

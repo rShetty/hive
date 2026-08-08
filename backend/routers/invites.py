@@ -267,7 +267,9 @@ async def accept_agent_invite(
     api_key_hash = get_password_hash(api_key)
     health_check_token = await generate_health_check_token()
     slug = Agent.generate_slug(accept_data.name)
-    
+    from services.agent_keys import new_signing_fields
+    _invite_signing_fields, _invite_priv = new_signing_fields()
+
     agent = Agent(
         name=accept_data.name,
         description=accept_data.description,
@@ -282,6 +284,7 @@ async def accept_agent_invite(
         health_check_token=health_check_token,
         owner_id=invite.user_id,
         version="1.0.0",
+        **_invite_signing_fields,
     )
     
     db.add(agent)
@@ -309,5 +312,7 @@ async def accept_agent_invite(
         "health_check_endpoint": f"/agents/{agent.id}/health",
         "health_check_token": health_check_token,
         "status": agent.status,
-        "message": "Welcome to Hive! Save your API key - it won't be shown again."
+        "signing_key_id": _invite_signing_fields["signing_key_id"],
+        "signing_private_key": _invite_priv,
+        "message": "Welcome to Hive! Save your API key and signing key - they won't be shown again."
     }

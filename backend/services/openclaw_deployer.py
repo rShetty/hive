@@ -48,6 +48,12 @@ def generate_compose(
     from services.secrets import split_secrets
 
     merged = {**(extra_env or {}), **(config_env or {})}
+    # Inject the platform signing secret so the agent runtime can verify
+    # inbound Hive delegation payloads. Routed to a file mount (not env) by
+    # split_secrets because the name ends with _SECRET.
+    _signing_secret = os.getenv("HIVE_SIGNING_SECRET", "")
+    if _signing_secret and _signing_secret != "change-me-in-production":
+        merged["HIVE_SIGNING_SECRET"] = _signing_secret
     plain, secrets = split_secrets(merged)
 
     env_lines = ""

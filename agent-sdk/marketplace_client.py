@@ -1,7 +1,9 @@
 """Agent SDK for connecting to the marketplace."""
+import hmac
 import os
 import time
 import requests
+from datetime import datetime
 from typing import List, Dict, Optional
 
 
@@ -66,6 +68,12 @@ class MarketplaceClient:
         data = response.json()
         self.api_key = data["api_key"]
         self.agent_id = data["agent_id"]
+        # Persist the Ed25519 signing key if the marketplace issued one.
+        if data.get("signing_private_key") and data.get("signing_key_id"):
+            try:
+                self.set_signing_key(data["signing_private_key"], data["signing_key_id"])
+            except Exception:
+                pass
 
         return data
     
@@ -133,6 +141,70 @@ class MarketplaceClient:
         response.raise_for_status()
         return response.json()
 
+    def set_signing_key(self, private_key_pem: str, key_id: str) -> None:
+        """Load the agent's Ed25519 private key (returned once at registration).
+
+        Required before calling :meth:`send_signed_callback`. The matching
+        public key is stored on the agent record in Hive and used to verify
+        callback signatures.
+        """
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives import serialization
+        self._signing_key = serialization.load_pem_private_key(
+            private_key_pem.encode("ascii"), password=None
+        )
+        self._signing_key_id = key_id
+
+    def send_signed_callback(
+        self,
+        delegation_id: str,
+        status: str,
+        result: Dict,
+        tokens_used: float,
+    ) -> Dict:
+        """POST an Ed25519-signed async completion callback to Hive.
+
+        Signs ``timestamp + "." + body`` with the agent's private key; Hive
+        verifies with the stored public key. This is the cryptographically
+        strong alternative to the legacy shared-HMAC callback path.
+        """
+        import base64
+        import json as _json
+        import time as _time
+
+        if not getattr(self, "_signing_key", None):
+            raise ValueError("Signing key not set. Call set_signing_key() first.")
+
+        payload = {
+            "delegation_id": delegation_id,
+            "status": status,
+            "result": result,
+            "tokens_used": tokens_used,
+            "completed_at": datetime.utcnow().isoformat(),
+        }
+        body = _json.dumps(payload, separators=(",", ":")).encode()
+        ts = str(int(_time.time()))
+        message = f"{ts}.".encode() + body
+        sig = base64.b64encode(self._signing_key.sign(message)).decode("ascii")
+
+        callback_url = (
+            f"{self.marketplace_url}/api/delegate/{delegation_id}/callback"
+        )
+        response = requests.post(
+            callback_url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hive-Timestamp": ts,
+                "X-Hive-Signature-Ed25519": sig,
+                "X-Hive-Key-Id": self._signing_key_id,
+                "X-Hive-Delegation-ID": delegation_id,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
 
 class HealthCheckHandler:
     """Mixin for FastAPI apps to handle marketplace health checks."""
@@ -147,8 +219,10 @@ class HealthCheckHandler:
         self.health_check_token = token
     
     def verify_health_check(self, token: str) -> bool:
-        """Verify a health check token."""
-        return token == self.health_check_token
+        """Verify a health check token (constant-time to avoid timing leaks)."""
+        if not self.health_check_token or not token:
+            return False
+        return hmac.compare_digest(self.health_check_token, token)
     
     def get_health_response(self, token: str) -> Dict:
         """Generate health check response."""

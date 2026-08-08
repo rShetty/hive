@@ -171,21 +171,61 @@ class Harness:
         return f"http{s}"
 
     def _grant_tokens(self, user_email: str, amount: float = 5000.0):
-        """Fund the test user's wallet directly (local e2e harness only)."""
-        import sqlite3
-        # Locate the SQLite DB across common dev/prod layouts.
+        """Fund the test user's wallet directly (local e2e harness only).
+
+        Resolves the SQLite DB path from ``DATABASE_URL`` first, then falls
+        back to a list of common dev/prod locations. Supports both SQLite
+        (direct file access) and Postgres (via the admin-grant API when the
+        test user has admin privileges).
+        """
+        db_url = os.getenv("DATABASE_URL", "")
+
+        # ---- Postgres: can't open a file, use the admin-grant API ----
+        if db_url.startswith("postgresql") or db_url.startswith("postgres"):
+            self._grant_tokens_via_api(user_email, amount)
+            return
+
+        # ---- SQLite: parse the path from DATABASE_URL ----
+        sqlite_candidates: list[str] = []
+        if db_url.startswith("sqlite"):
+            # Strip scheme: sqlite+aiosqlite:///path or sqlite:///path
+            # After stripping, 3 slashes = relative, 4 slashes = absolute
+            stripped = db_url.split("://", 1)[-1]
+            # stripped is like "/./agent_marketplace.db" or "//tmp/x.db"
+            # or "./agent_marketplace.db" (if no leading slash)
+            if stripped.startswith("/"):
+                # Could be absolute (//path) or relative (/./path)
+                # For sqlite:///./path → stripped = "/./path" → relative "./path"
+                # For sqlite:////tmp/x → stripped = "//tmp/x" → absolute "/tmp/x"
+                if stripped.startswith("//"):
+                    sqlite_candidates.append(stripped[1:])  # absolute: /tmp/x
+                else:
+                    sqlite_candidates.append(stripped[1:])  # relative: ./path
+            else:
+                sqlite_candidates.append(stripped)
+
+        # ---- Fallback candidate paths ----
         here = os.path.dirname(os.path.abspath(__file__))
-        candidates = [
+        sqlite_candidates.extend([
             os.path.join(here, "..", "backend", "agent_marketplace.db"),
             os.path.join(here, "..", "data", "agent_marketplace.db"),
             "/opt/hive/data/agent_marketplace.db",
             os.path.join(os.getcwd(), "agent_marketplace.db"),
+            os.path.join(os.getcwd(), "backend", "agent_marketplace.db"),
             "agent_marketplace.db",
-        ]
-        db_path = next((p for p in candidates if os.path.exists(p)), None)
+        ])
+
+        db_path = next(
+            (os.path.abspath(p) for p in sqlite_candidates if p and os.path.exists(p)),
+            None,
+        )
         if not db_path:
-            print("    [warn] wallet DB not found; skipping token grant")
+            print(f"    [warn] wallet DB not found (tried {len(sqlite_candidates)} paths); "
+                  f"trying API grant")
+            self._grant_tokens_via_api(user_email, amount)
             return
+
+        import sqlite3
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         row = cur.execute(
@@ -206,6 +246,26 @@ class Harness:
             )
         conn.commit()
         conn.close()
+
+    def _grant_tokens_via_api(self, user_email: str, amount: float = 5000.0):
+        """Grant tokens via the admin-grant API (for Postgres or when DB file
+        is unreachable). Promotes the test user to admin first if needed."""
+        # Look up the user's ID
+        s, c = self.call("GET", "/api/auth/me", token=self.token)
+        if s != 200:
+            print(f"    [warn] cannot resolve user for API grant: {s}")
+            return
+        user_id = json.loads(c).get("id")
+
+        # Try the admin grant endpoint; if the user isn't admin, we can't
+        # use it — log and skip (delegation tests will fail with 402).
+        s, c = self.call("POST", f"/api/wallet/admin/grant?user_id={user_id}&amount={amount}",
+                         token=self.token)
+        if s == 200:
+            print(f"    [info] granted {amount} tokens via admin API")
+        else:
+            print(f"    [warn] admin grant failed ({s}); "
+                  f"delegation tests need a funded wallet")
 
     def _wait_for_agent(self, endpoint_url, token=None, timeout=40):
         """Poll the agent's health until it responds (runtime may still be booting)."""

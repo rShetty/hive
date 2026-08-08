@@ -170,6 +170,8 @@ class AgentRegistrationResponse(HiveBaseModel):
     health_check_endpoint: str
     health_check_token: str
     status: str
+    signing_key_id: Optional[str] = None
+    signing_private_key: Optional[str] = None  # PEM, returned ONCE
 
 
 class MCPServerSpec(HiveBaseModel):

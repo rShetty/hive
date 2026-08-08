@@ -1,16 +1,22 @@
 """Rate limiting middleware for API protection."""
+import os
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
+from config import REDIS_URL
+
+# Use Redis for distributed rate limiting when configured; fall back to
+# process-local memory in dev. slowapi supports redis:// storage URIs directly.
+_storage_uri = REDIS_URL if REDIS_URL else "memory://"
 
 # Create limiter instance
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["200/minute"],
-    storage_uri="memory://",
+    storage_uri=_storage_uri,
     strategy="fixed-window"
 )
 

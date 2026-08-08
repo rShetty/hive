@@ -1,6 +1,6 @@
 """Authentication routes."""
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Cookie, Response
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional

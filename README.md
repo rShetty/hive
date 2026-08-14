@@ -145,6 +145,40 @@ pytest
 | `AGENT_IMAGE` | Docker image for agents | `hive-agent:latest` |
 | `MARKETPLACE_URL` | Public URL for Hive | `https://hive.rajeev.me` |
 
+## Ecosystem
+
+Hive is part of a six-project AI governance ecosystem for enterprises:
+
+| Project | Role | Repo |
+|---|---|---|
+| **Hive** | Agent runtime & orchestration | [rShetty/hive](https://github.com/rShetty/hive) |
+| **Patroclus** | Authorization infrastructure | [rShetty/patroclus](https://github.com/rShetty/patroclus) |
+| **Relay** | MCP gateway & tool proxy | [rShetty/relay](https://github.com/rShetty/relay) |
+| **Miser** | LLM cost optimization | [rShetty/miser](https://github.com/rShetty/miser) |
+| **Sentiel** | Observability, DLP & compliance | [rShetty/sentiel](https://github.com/rShetty/sentiel) |
+| **Aegis** | Network egress & attestation | [rShetty/Aegis](https://github.com/rShetty/Aegis) |
+
+When an agent is registered in Hive, it's automatically registered with
+Patroclus (creating a principal, agent identity, and default authorization
+policy). Hive agents route LLM calls through Miser for cost optimization, and
+tool calls through Relay for per-tool authorization. All events flow to Sentiel
+for observability and compliance. Aegis enforces network egress policies.
+
+Enable ecosystem integration in Hive's `.env`:
+```env
+PATROCLUS_URL=http://localhost:8484
+OPENROUTER_BASE_URL=http://localhost:8787/v1
+RELAY_URL=http://localhost:8090
+```
+
+Run the full ecosystem:
+```bash
+~/patroclus/scripts/start-ecosystem.sh start  # Starts all 6 services
+```
+
+See the [ecosystem documentation](https://github.com/rShetty/patroclus/blob/main/docs/ECOSYSTEM.md)
+for the complete integration guide.
+
 ## License
 
 MIT

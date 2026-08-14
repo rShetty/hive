@@ -1,8 +1,11 @@
 """Agent-only API routes (registration, heartbeat)."""
 import hmac
+import os
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import List, Optional
+
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -216,6 +219,67 @@ async def register_agent(
     await db.commit()
 
     print(f"🔑 Agent registered: {agent.name} (ID: {agent.id}, type: {agent_type})")
+
+    # ── Patroclus integration ──────────────────────────────────────
+    # Register the agent and its owner (principal) with Patroclus
+    # so that every tool call the agent makes can be authorized.
+    patroclus_url = os.getenv("PATROCLUS_URL", "")
+    if patroclus_url:
+        try:
+            patroclus = httpx.Client(base_url=patroclus_url, timeout=5.0)
+
+            # Register the human principal (owner)
+            principal_resp = patroclus.post("/v1/admin/principals", json={
+                "external_id": current_user.email,
+                "idp_provider": "local",
+                "email": current_user.email,
+                "display_name": getattr(current_user, "username", current_user.email),
+            })
+            principal_id = principal_resp.json().get("id", "") if principal_resp.status_code == 200 else ""
+
+            # Register the agent
+            agent_resp = patroclus.post("/v1/admin/agents", json={
+                "name": agent.name,
+                "principal_type": "delegated",
+                "owner_id": principal_id,
+            })
+            if agent_resp.status_code == 200:
+                patroclus_agent_id = agent_resp.json()["id"]
+                print(f"  ↳ Patroclus agent registered: {patroclus_agent_id}")
+
+                # Create a default policy for this agent
+                patroclus.post("/v1/admin/policies", json={
+                    "name": f"agent-{agent.slug}-default",
+                    "engine": "yaml",
+                    "definition": f"""
+- name: allow-tool-calls
+  actions: ["call", "read", "query", "list"]
+  resources: ["*"]
+  scopes: ["*"]
+  decision: allow
+  reason: Default tool access for {agent.name}
+
+- name: rate-limited-api
+  actions: ["call"]
+  resources: ["api-*"]
+  scopes: ["*"]
+  decision: allow
+  rate_limit_per_minute: 10
+  reason: Rate limited API access
+
+- name: require-approval-prod
+  actions: ["write", "delete", "deploy"]
+  resources: ["prod-*"]
+  scopes: ["*"]
+  decision: require_approval
+  reason: Production operations require human approval
+""",
+                })
+                print(f"  ↳ Patroclus policy created for {agent.name}")
+
+            patroclus.close()
+        except Exception as e:
+            print(f"  ⚠ Patroclus integration skipped: {e}")
 
     return {
         "agent_id": agent.id,

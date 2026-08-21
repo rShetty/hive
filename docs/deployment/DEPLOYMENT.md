@@ -155,11 +155,131 @@ apt install -y docker-compose
 ### Database/data persistence
 The application data is stored in `/opt/hive/data` on the remote server. This directory persists across deployments.
 
-To backup:
+For database backups and restores, see [Backup & Restore](#backup--restore) below.
+
+## Backup & Restore
+
+Hive ships two scripts for consistent SQLite backups:
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/backup_db.sh` | Consistent, timestamped snapshot via `sqlite3 .backup` (falls back to the Python `sqlite3` backup API), integrity-verified, with retention pruning |
+| `scripts/restore_db.sh` | Restores a backup after verifying its integrity (`PRAGMA integrity_check`) and atomically swaps it into place |
+
+Both scripts resolve the target database the same way: `DB_PATH` env var → `DATABASE_URL` (SQLite URLs only) → `/opt/hive/data/agent_marketplace.db`.
+
+### Configuration (environment variables)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BACKUP_DIR` | `/var/backups/hive` | Where timestamped backups are written |
+| `RETENTION_DAYS` | `14` | Backups older than this are pruned after each run |
+| `DB_PATH` | derived from `DATABASE_URL` | Explicit path to the SQLite file |
+| `POST_BACKUP_HOOK` | unset | Optional command run after a verified backup; the backup path is passed as `$1` |
+
+### Manual backup
+
 ```bash
-ssh root@187.127.140.125 'tar -czf /tmp/hive-backup.tar.gz /opt/hive/data'
-scp root@187.127.140.125:/tmp/hive-backup.tar.gz ./hive-backup-$(date +%Y%m%d).tar.gz
+ssh root@187.127.140.125
+cd /opt/hive && git pull   # ensure the scripts are present
+BACKUP_DIR=/var/backups/hive ./scripts/backup_db.sh
 ```
+
+The script is safe to run while the app is running — `.backup` takes a consistent online snapshot. Every snapshot is verified with `PRAGMA integrity_check` before it counts as a backup; files older than `RETENTION_DAYS` are deleted automatically.
+
+### Off-box copies (S3 / restic)
+
+Local backups do not survive disk loss. Ship them off-box with `POST_BACKUP_HOOK`:
+
+```bash
+# S3
+POST_BACKUP_HOOK='aws s3 cp "$1" s3://my-bucket/hive-db/' ./scripts/backup_db.sh
+
+# restic
+export RESTIC_REPOSITORY=/mnt/backups/hive RESTIC_PASSWORD_FILE=/root/.restic-pass
+POST_BACKUP_HOOK='restic backup "$1"' ./scripts/backup_db.sh
+```
+
+### Schedule with cron or a systemd timer
+
+**cron** (twice daily):
+
+```cron
+0 */12 * * * cd /opt/hive && BACKUP_DIR=/var/backups/hive POST_BACKUP_HOOK='aws s3 cp "$1" s3://my-bucket/hive-db/' ./scripts/backup_db.sh >> /var/log/hive-backup.log 2>&1
+```
+
+**systemd timer** — `/etc/systemd/system/hive-backup.service`:
+
+```ini
+[Unit]
+Description=Hive SQLite database backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hive
+Environment=BACKUP_DIR=/var/backups/hive
+ExecStart=/opt/hive/scripts/backup_db.sh
+```
+
+`/etc/systemd/system/hive-backup.timer`:
+
+```ini
+[Unit]
+Description=Run hive-backup twice daily
+
+[Timer]
+OnCalendar=*-*-* 00/12:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable with:
+
+```bash
+systemctl daemon-reload && systemctl enable --now hive-backup.timer
+systemctl list-timers hive-backup.timer
+```
+
+### Verify backups
+
+After each run (and at least monthly as a drill):
+
+```bash
+# 1. The script already ran integrity_check, but double-check the latest file:
+LATEST=$(ls -t /var/backups/hive/agent_marketplace-*.db | head -1)
+sqlite3 "$LATEST" 'PRAGMA integrity_check;'          # must print: ok
+sqlite3 "$LATEST" "SELECT count(*) FROM users;"      # plausible row count
+
+# 2. Test-restore into a scratch path (never touches the live database):
+DB_PATH=/tmp/restore-drill.db ./scripts/restore_db.sh -y "$LATEST"
+sqlite3 /tmp/restore-drill.db 'PRAGMA integrity_check;'   # must print: ok
+rm /tmp/restore-drill.db
+```
+
+A backup that has never been restored is not a backup — run the drill above whenever you change schema or before upgrades.
+
+### Restore runbook
+
+1. **Stop the app** (restoring under a running writer can corrupt the database):
+   ```bash
+   ssh root@187.127.140.125
+   cd /opt/hive && docker-compose -f docker-compose.prod.yml stop marketplace
+   ```
+2. **Pick the backup** to restore and run the restore script:
+   ```bash
+   LATEST=$(ls -t /var/backups/hive/agent_marketplace-*.db | head -1)
+   ./scripts/restore_db.sh "$LATEST"    # prompts; use -y to skip the prompt
+   ```
+   The script verifies the backup's integrity first, keeps a safety copy of the current database as `<db>.pre-restore.bak`, removes stale `-wal`/`-shm` sidecar files, and atomically swaps in the restored file.
+3. **Verify**: the script prints `integrity_check = ok` and the table count on success.
+4. **Start the app again** and smoke-test:
+   ```bash
+   docker-compose -f docker-compose.prod.yml up -d marketplace
+   curl -fsS http://localhost:8080/api/health
+   ```
+5. Once satisfied, delete the safety copy: `rm /opt/hive/data/agent_marketplace.db.pre-restore.bak`
 
 ## Security Considerations
 
@@ -171,7 +291,7 @@ scp root@187.127.140.125:/tmp/hive-backup.tar.gz ./hive-backup-$(date +%Y%m%d).t
 4. **Secure the Docker socket**: Use a Docker socket proxy instead of mounting it directly
 5. **Use secrets management**: Consider using Docker secrets or a vault service
 6. **Enable monitoring**: Set up logging and monitoring (Prometheus, Grafana, etc.)
-7. **Regular backups**: Automate database backups
+7. **Regular backups**: Automate database backups (see [Backup & Restore](#backup--restore))
 8. **Keep keys secure**: Never commit `.env` or keys to version control
 
 ## Advanced: Production Setup

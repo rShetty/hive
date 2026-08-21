@@ -35,12 +35,84 @@ _AGENT_MAIN = os.path.join(_AGENT_APP_DIR, "main.py")
 import sys
 _PYTHON = os.getenv("OPENCLAW_PYTHON", sys.executable)
 
+# --- Environment allowlist ---------------------------------------------------
+# Agent subprocesses do NOT inherit Hive's full environment. Only these benign
+# OS variables are forwarded, plus the explicitly-approved runtime variables
+# below — anything else (server secrets, host config, ...) stays out of the
+# agent process environment.
+_BASE_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ")
+
+# Agent-runtime variables read from Hive's own environment and forwarded when
+# present: LLM credentials/model selection (the agent app also honours
+# ANTHROPIC/OPENAI/GOOGLE keys) plus the delegation HMAC secret. Secret-suffixed
+# names are still routed through split_secrets() into *_FILE files.
+_AGENT_ENV_ALLOWLIST = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
+    "OPENROUTER_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+    "GOOGLE_API_KEY",
+    "GOOGLE_MODEL",
+    "COHERE_API_KEY",
+    "HIVE_SIGNING_SECRET",
+)
+
+# Dedicated unprivileged user/group for spawned agent processes. When
+# OPENCLAW_AGENT_USER is configured (POSIX only) each subprocess drops to it
+# before exec; misconfiguration fails closed with RuntimeError.
+_AGENT_USER_ENV = "OPENCLAW_AGENT_USER"
+_AGENT_GROUP_ENV = "OPENCLAW_AGENT_GROUP"
+
 
 def _find_python() -> str:
     """Return a usable python interpreter (prefer the one running Hive)."""
     if shutil.which(_PYTHON):
         return _PYTHON
     return sys.executable
+
+
+def _agent_privilege_drop():
+    """Return a ``preexec_fn`` dropping agent processes to an unprivileged
+    user, or ``None`` when not configured.
+
+    Configure via ``OPENCLAW_AGENT_USER`` (and optionally
+    ``OPENCLAW_AGENT_GROUP``). Only meaningful when Hive runs as root; on
+    non-POSIX platforms or unknown users it raises ``RuntimeError`` so a deploy
+    never silently runs with more privilege than intended.
+    """
+    user = (os.getenv(_AGENT_USER_ENV) or "").strip()
+    if not user:
+        return None
+    if os.name != "posix" or not hasattr(os, "setuid"):
+        raise RuntimeError(
+            f"{_AGENT_USER_ENV}={user!r} requires a POSIX platform with setuid"
+        )
+    import pwd
+    import grp
+
+    group = (os.getenv(_AGENT_GROUP_ENV) or "").strip()
+    try:
+        pw_record = pwd.getpwnam(user)
+        gid = grp.getgrnam(group).gr_gid if group else pw_record.pw_gid
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Cannot drop privileges for agent user {user!r}: {exc}"
+        ) from exc
+    uid = pw_record.pw_uid
+
+    def _drop():  # pragma: no cover - executes in the forked child
+        try:
+            os.initgroups(user, gid)
+        except OSError:
+            pass
+        os.setgid(gid)
+        if uid != os.getuid():
+            os.setuid(uid)
+
+    return _drop
 
 
 def spawn_openclaw_agent(
@@ -93,32 +165,29 @@ def spawn_openclaw_agent(
             _port = os.getenv("PORT", "8000")
             hive_url = f"http://localhost:{_port}"
 
-    # Forward any user-provided LLM credentials so the agent can make real
-    # model calls. OPENROUTER_API_KEY (+ optional OPENROUTER_MODEL) is the
-    # primary path; the agent app also honours ANTHROPIC/OPENAI/GOOGLE keys.
-    # User keys (saved in Settings and decrypted by the deploy endpoint) arrive
-    # via ``env_vars``; we fall back to server-level keys if none were supplied.
-    llm_env = {}
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    user_openrouter_key = (env_vars or {}).get("OPENROUTER_API_KEY")
-    if openrouter_key and not user_openrouter_key:
-        llm_env["OPENROUTER_API_KEY"] = openrouter_key
+    # Forward only allowlisted server-level agent-runtime variables (LLM
+    # credentials/models, delegation HMAC secret); user keys (saved in
+    # Settings and decrypted by the deploy endpoint) arrive via ``env_vars``
+    # and take precedence over them.
+    forwarded_env = {
+        name: os.environ[name]
+        for name in _AGENT_ENV_ALLOWLIST
+        if os.environ.get(name)
+    }
+
     # Always ensure a usable OpenRouter model is selected so the agent does
     # not fall back to a default that may be unavailable for the user's key.
     # An explicit model (user-supplied or server-configured) wins; otherwise
     # a broadly-available model is used as the safety net.
-    if openrouter_key or user_openrouter_key:
-        llm_env["OPENROUTER_MODEL"] = (
-            (env_vars or {}).get("OPENROUTER_MODEL")
-            or os.getenv("OPENROUTER_MODEL")
-            or "openai/gpt-4o-mini"
-        )
+    if (os.environ.get("OPENROUTER_API_KEY") or (env_vars or {}).get("OPENROUTER_API_KEY")) \
+            and not ((env_vars or {}).get("OPENROUTER_MODEL") or os.environ.get("OPENROUTER_MODEL")):
+        forwarded_env.setdefault("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 
     # Secret values (API keys/tokens) are written to files and exposed via
     # ``<NAME>_FILE`` instead of plaintext env, so they don't leak into the
     # process environment / ps output.
     from services.secrets import split_secrets
-    plain_env, secret_values = split_secrets({**(env_vars or {}), **llm_env})
+    plain_env, secret_values = split_secrets({**forwarded_env, **(env_vars or {})})
 
     secret_file_env = {}
     secret_dir = os.path.join("/tmp", "hive-secrets", f"proc-{agent_id[:8]}")
@@ -131,7 +200,9 @@ def spawn_openclaw_agent(
         secret_file_env[f"{name}_FILE"] = secret_path
 
     env = {
-        **os.environ,
+        # Only allowlisted OS variables — NOT the full os.environ...
+        **{name: os.environ[name]
+           for name in _BASE_ENV_ALLOWLIST if os.environ.get(name)},
         # Plain user-supplied env (skills, model names, urls, etc.)...
         **plain_env,
         # ...secret values surfaced via *_FILE...
@@ -160,6 +231,7 @@ def spawn_openclaw_agent(
         stdout=open(log_path, "a"),
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        preexec_fn=_agent_privilege_drop(),
     )
 
     with _RUNNERS_LOCK:

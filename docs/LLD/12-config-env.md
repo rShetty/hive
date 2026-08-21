@@ -41,6 +41,10 @@ Every environment variable Hive consumes, its default, and where it's read.
 | `OPENCLAW_MOCK_MODE` | unset | `openclaw_deployer.py:17` | mock deploy (no real container) |
 | `OPENCLAW_PYTHON` | `sys.executable` | `openclaw_local.py:36` | Python interpreter for subprocess agents |
 | `OPENCLAW_LOCAL_HIVE_URL` | — | `openclaw_local.py:85` | override Hive URL for local subprocess agents |
+| `OPENCLAW_AGENT_USER` | — (inherit) | `openclaw_local.py:_agent_privilege_drop` | dedicated unprivileged user local agent processes drop to before exec (POSIX). Unknown user → deploy fails closed |
+| `OPENCLAW_AGENT_GROUP` | user's primary group | same | optional group override when dropping privileges |
+
+**Subprocess environment allowlist:** spawned agents never inherit Hive's full `os.environ`. Only `_BASE_ENV_ALLOWLIST` (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`, `TZ`) plus `_AGENT_ENV_ALLOWLIST` (LLM keys/models, `HIVE_SIGNING_SECRET`) are read from Hive's environment and forwarded; everything else stays out of the agent process.
 | `AGENT_IMAGE` | `hive-agent:latest` | `container_manager.py:25` | legacy Hermes agent image |
 | `HIVE_DOMAIN` | — | `openclaw_deployer.py:21` | base domain for nginx subdomains |
 | `HIVE_SSL_CERT` | — | `openclaw_deployer.py:24` | wildcard SSL cert path |

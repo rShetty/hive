@@ -6,14 +6,52 @@ from typing import Optional
 # Docker client - lazy initialization
 docker_client = None
 
+
+class DockerUnavailableError(RuntimeError):
+    """Raised when the Docker endpoint is required but not reachable.
+
+    Hive never mounts /var/run/docker.sock directly (see docs/HLD/
+    07-deployment.md); instead DOCKER_HOST points at a docker-socket-proxy or
+    remote daemon. When that endpoint is configured but unreachable this error
+    surfaces immediately instead of silently degrading to local subprocesses.
+    """
+
+
+def _docker_required() -> bool:
+    """True when operators opted into Docker mode for this instance.
+
+    Set via HIVE_REQUIRE_DOCKER=1 or by configuring an explicit DOCKER_HOST
+    (e.g. tcp://docker-socket-proxy:2375). In that mode a missing/unreachable
+    endpoint is a hard error, not a silent fallback.
+    """
+    return bool(
+        os.getenv("HIVE_REQUIRE_DOCKER", "").lower() in ("1", "true", "yes")
+        or os.getenv("DOCKER_HOST")
+    )
+
+
 def get_docker_client():
-    """Get or create Docker client."""
+    """Get or create Docker client.
+
+    Returns None only when Docker is genuinely unavailable AND not required
+    (dev fallback: agents run as local subprocesses). Raises
+    DockerUnavailableError when ``_docker_required()`` is true so callers fail
+    loudly instead of silently degrading.
+    """
     global docker_client
     if docker_client is None:
         try:
             import docker
             docker_client = docker.from_env()
         except Exception as e:
+            if _docker_required():
+                raise DockerUnavailableError(
+                    "Docker endpoint unavailable "
+                    f"(DOCKER_HOST={os.getenv('DOCKER_HOST') or '<unset>'!r}): {e}. "
+                    "HIVE_REQUIRE_DOCKER/DOCKER_HOST is set, so agent containers "
+                    "cannot be created. Ensure the docker-socket-proxy (or remote "
+                    "daemon) is reachable — see docs/HLD/07-deployment.md."
+                ) from e
             print(f"Warning: Docker not available: {e}")
             return None
     return docker_client

@@ -14,13 +14,41 @@ Hive deploys as a single Dockerized FastAPI service (the marketplace/backend), w
 
 ## Compose
 
+### Docker access: socket proxy, never a mounted socket
+
+The host Docker socket (`/var/run/docker.sock`) is **never mounted** into the
+Hive container — anyone who escapes the container or achieves RCE in Hive
+would otherwise get full root control of the host. Instead, Docker access is
+config-driven via `DOCKER_HOST`:
+
+- **Production (recommended)**: run the `docker-socket-proxy` service
+  (`tecnativa/docker-socket-proxy`, profile `with-docker` in
+  `docker-compose.prod.yml`). It exposes a *filtered, read-mostly* Docker API
+  (containers/images/networks only — no `EXEC`, no volume ops) on an internal
+  network. Hive reaches it with `DOCKER_HOST=tcp://docker-socket-proxy:2375`
+  (the default in prod compose and in `deploy.sh`, overridable via
+  `DOCKER_HOST_OVERRIDE`).
+  Start with: `docker compose -f docker-compose.prod.yml --profile with-docker up -d`
+- **Remote daemon**: point `DOCKER_HOST` at any remote/remote-TLS daemon.
+- **Dev fallback**: with neither `DOCKER_HOST` nor `HIVE_REQUIRE_DOCKER` set,
+  an unreachable endpoint degrades to local-subprocess agents
+  (`openclaw_local`). Set `HIVE_REQUIRE_DOCKER=1` to turn that fallback into
+  a hard startup failure — `container_manager.get_docker_client` then raises
+  `DockerUnavailableError` with a remediation hint instead of silently
+  spawning subprocesses.
+
+Traefik (dev compose, `with-proxy` profile) also talks to the proxy rather
+than mounting the socket itself.
+
 ### `docker-compose.yml` (dev)
-- Service `marketplace`: `build: .`, ports `8000:8000`, sqlite at `data/agent_marketplace.db`, mounts `./data:/data` and **docker.sock `/var/run/docker.sock:/var/run/docker.sock:ro`** (so Hive can spawn sibling agent containers — warned as a security risk), network `agent-marketplace`, `restart: unless-stopped`.
-- Service `traefik` (opt-in via `profiles: [with-proxy]`): `traefik:v3.0`, docker provider, `:80`.
+- Service `marketplace`: `build: .`, ports `8000:8000`, sqlite at `data/agent_marketplace.db`, mounts `./data:/data`; Docker access via `DOCKER_HOST` passthrough (empty by default → local-subprocess agents), network `agent-marketplace`, `restart: unless-stopped`.
+- Service `docker-socket-proxy` (opt-in via `profiles: [with-docker]`): filtered read-only Docker API for agent-container spawning.
+- Service `traefik` (opt-in via `profiles: [with-proxy]`): `traefik:v3.0`, docker provider pointed at `tcp://docker-socket-proxy:2375`, `:80`.
 - **Known issue**: maps `8000:8000` but the image listens on `8080` (`Dockerfile` `ENV PORT=8080`) with no `PORT` override — likely broken as-is.
 
 ### `docker-compose.prod.yml` (prod)
-- Service `marketplace`: `build: .`, ports `127.0.0.1:8080:8080` (loopback-only — traffic enters via nginx/Traefik), sqlite at `/app/data/agent_marketplace.db`, **requires** `ENCRYPTION_KEY` and `SECRET_KEY`, `MARKETPLACE_URL=https://hive.rajeev.me`, `HIVE_URL=http://localhost:8080`, `HIVE_DOMAIN=hive.rajeev.me`, `OPENCLAW_IMAGE`, docker.sock `:ro`, `restart: unless-stopped`.
+- Service `marketplace`: `build: .`, ports `127.0.0.1:8080:8080` (loopback-only — traffic enters via nginx/Traefik), sqlite at `/app/data/agent_marketplace.db`, **requires** `ENCRYPTION_KEY` and `SECRET_KEY`, `MARKETPLACE_URL=https://hive.rajeev.me`, `HIVE_URL=http://localhost:8080`, `HIVE_DOMAIN=hive.rajeev.me`, `OPENCLAW_IMAGE`, `DOCKER_HOST=tcp://docker-socket-proxy:2375` + `HIVE_REQUIRE_DOCKER=1` (fail loud), `restart: unless-stopped`.
+- Service `docker-socket-proxy` (profile `with-docker`): the only component allowed to see `/var/run/docker.sock`, read-only, with a minimal API allowlist.
 - No Traefik service — production uses nginx + certbot provisioned per-agent by `openclaw_deployer.py`.
 
 ## Agent deploy paths (overview)

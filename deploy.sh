@@ -203,9 +203,10 @@ services:
       - OPENCLAW_VPS_SSH_PORT=${OC_SSH_PORT}
       - COOKIE_SECURE=1
       - DEV_MODE=0
+      - DOCKER_HOST=${DOCKER_HOST_OVERRIDE:-tcp://docker-socket-proxy:2375}
+      - HIVE_REQUIRE_DOCKER=1
     volumes:
       - /opt/${APP_NAME}/data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /root/.ssh:/root/.ssh:ro
     depends_on:
       - redis
@@ -218,6 +219,22 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - agent-marketplace
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - NETWORKS=1
+      - POST=1
+      - VOLUMES=0
+      - EXEC=0
+      - ALLOW_RESTARTS=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
     networks:
       - agent-marketplace

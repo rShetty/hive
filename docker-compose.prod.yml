@@ -25,10 +25,13 @@ services:
       - OPENCLAW_VPS_SSH_KEY_PATH=${OPENCLAW_VPS_SSH_KEY_PATH:-/root/.ssh/openclaw_deploy_key}
       - OPENCLAW_VPS_SSH_USER=${OPENCLAW_VPS_SSH_USER:-root}
       - OPENCLAW_VPS_SSH_PORT=${OPENCLAW_VPS_SSH_PORT:-22}
+      # Docker access is config-driven: point DOCKER_HOST at a docker-socket
+      # proxy or remote daemon. The host socket is NEVER mounted into Hive.
+      # See docs/HLD/07-deployment.md for the recommended setup.
+      - DOCKER_HOST=${DOCKER_HOST:-tcp://docker-socket-proxy:2375}
+      - HIVE_REQUIRE_DOCKER=${HIVE_REQUIRE_DOCKER:-1}
     volumes:
       - ./data:/app/data
-      # WARNING: Docker socket grants host-level access. Use a socket proxy in production.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /root/.ssh:/root/.ssh:ro
     depends_on:
       - redis
@@ -44,6 +47,27 @@ services:
     restart: unless-stopped
     networks:
       - agent-marketplace
+
+  # Read-only Docker API proxy: exposes a *filtered* Docker API to Hive
+  # (container/image/network ops only — no exec, no host mounts, no root).
+  # Enable with: docker compose --profile with-docker up -d
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - NETWORKS=1
+      - POST=1
+      - VOLUMES=0
+      - EXEC=0
+      - ALLOW_RESTARTS=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - agent-marketplace
+    restart: unless-stopped
+    profiles:
+      - with-docker
 
 volumes:
   redis-data:

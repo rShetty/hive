@@ -127,6 +127,31 @@ class Metrics:
             }
         }
 
+    def render_prometheus(self) -> str:
+        """Render metrics in Prometheus text exposition format (v0.0.4)."""
+        lines = [
+            "# HELP hive_requests_total Total API requests.",
+            "# TYPE hive_requests_total counter",
+            f"hive_requests_total {self.requests_total}",
+            "# HELP hive_delegations_total Delegation attempts.",
+            "# TYPE hive_delegations_total counter",
+            f"hive_delegations_total {self.delegation_count}",
+            f"hive_delegations_success_total {self.delegation_success}",
+            f"hive_delegations_failed_total {self.delegation_failed}",
+            "# HELP hive_tokens_transferred_total Tokens transferred on successful delegations.",
+            "# TYPE hive_tokens_transferred_total counter",
+            f"hive_tokens_transferred_total {self.tokens_transferred}",
+            "# HELP hive_agents_registered_total Agents registered.",
+            "# TYPE hive_agents_registered_total counter",
+            f"hive_agents_registered_total {self.agents_registered}",
+            "# HELP hive_users_registered_total Users registered.",
+            "# TYPE hive_users_registered_total counter",
+            f"hive_users_registered_total {self.users_registered}",
+        ]
+        for status, count in sorted(self.requests_by_status.items()):
+            lines.append(f'hive_requests_by_status{{status="{status}"}} {count}')
+        return "\n".join(lines) + "\n"
+
 
 # Global metrics instance
 metrics = Metrics()

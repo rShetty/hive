@@ -14,8 +14,8 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
@@ -23,6 +23,7 @@ from slowapi.errors import RateLimitExceeded
 from database import init_db
 from config import enforce_prod_config
 from routers import auth, agents, agent_api, skills, deploy, marketplace, invites, wallet, delegation, reviews, agent_config, mcp, mcp_oauth, workflows, teams
+from auth import get_current_admin_user
 from services.skill_catalog import seed_skills
 from middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from middleware.monitoring import MonitoringMiddleware, metrics
@@ -265,8 +266,18 @@ async def resolve_did_endpoint(did: str):
 
 
 @app.get("/api/metrics")
-async def get_metrics():
-    """Get service metrics (for monitoring/admin)."""
+async def get_metrics(
+    request: Request,
+    current_user = Depends(get_current_admin_user),
+):
+    """Service metrics — admin-only. Prometheus scrapes with a bearer token
+    (Accept: text/plain) or the dashboard uses the JSON summary."""
+    accept = request.headers.get("accept", "")
+    if "text/plain" in accept:
+        return Response(
+            content=metrics.render_prometheus(),
+            media_type="text/plain; version=0.0.4",
+        )
     return metrics.get_summary()
 
 

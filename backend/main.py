@@ -119,6 +119,22 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        # Issue #11: CSP covering the frontend's real needs — Tailwind/Alpine
+        # from CDNs, Google Fonts, inline scripts/styles (the pages are server-
+        # rendered HTML with inline <script> blocks), and the SSE/WebSocket
+        # connections back to this origin. `blob:`/`data:` kept for worker and
+        # image fallbacks used by vendored libs.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'self'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
         # Don't set HSTS here — nginx handles it for HTTPS
         return response
 
@@ -414,7 +430,8 @@ async def mcp_page():
 
 # ── Agent dashboard proxy ─────────────────────────────────────────────────────
 # Serves each OpenClaw agent's built-in dashboard at /a/{slug}/
-# Protected by Hive JWT (read from hive_token cookie set at login).
+# Protected by Hive JWT (read from the httpOnly hive_session cookie set at
+# login — issue #11).
 
 _LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -463,7 +480,10 @@ function loginApp() {{
         }});
         const d = await r.json();
         if (!r.ok) {{ this.error = d.detail || 'Login failed'; return; }}
-        localStorage.setItem('token', d.access_token);
+        // Issue #11: token stays in memory (app.js); the httpOnly cookies
+        // issued with the login response carry the session.
+        setToken(d.access_token);
+        localStorage.removeItem('token');
         window.location.reload();
       }} catch(e) {{ this.error = 'Network error'; }}
       finally {{ this.loading = false; }}
@@ -476,12 +496,17 @@ function loginApp() {{
 
 
 async def _validate_hive_token(request: Request):
-    """Extract and validate JWT from hive_token cookie or Authorization header."""
-    from auth import SECRET_KEY, ALGORITHM, JWT_ISSUER, JWT_AUDIENCE
-    from jose import jwt, JWTError
-    import os as _os
+    """Extract and validate JWT from the httpOnly hive_session cookie or Authorization header.
 
-    token = request.cookies.get("hive_token")
+    Issue #11: `hive_token` (legacy, JS-readable) is still accepted during
+    deploy rollouts so existing logged-in browsers keep working; new logins no
+    longer set it.
+    """
+    from auth import SECRET_KEY, ALGORITHM, JWT_ISSUER, JWT_AUDIENCE
+    from routers.auth import SESSION_COOKIE_NAME
+    from jose import jwt, JWTError
+
+    token = request.cookies.get(SESSION_COOKIE_NAME) or request.cookies.get("hive_token")
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):

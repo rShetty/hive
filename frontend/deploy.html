@@ -286,8 +286,15 @@
                 openclaw: { extraSkills: [], tagsRaw: '' },
                 openclawResult: null,
 
-                init() { this.checkAuth(); this.loadSkills(); this.loadMcp(); },
-                checkAuth() { if (!localStorage.getItem('token')) window.location.href = '/login'; },
+                async init() {
+                    // Issue #11: restore the in-memory token via the httpOnly
+                    // refresh cookie before deciding auth state.
+                    await restoreSession();
+                    this.checkAuth();
+                    this.loadSkills();
+                    this.loadMcp();
+                },
+                checkAuth() { if (!isAuthenticated()) window.location.href = '/login'; },
                 async loadSkills() {
                     try { const r = await apiFetch('/api/skills'); if (r.ok) this.skills = await r.json(); }
                     catch (e) { console.error('Failed to load skills:', e); }

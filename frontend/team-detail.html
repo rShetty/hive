@@ -369,6 +369,9 @@
             finalOutput: '',
 
             async init() {
+                // Issue #11: restore the in-memory token via the httpOnly
+                // refresh cookie before deciding auth state.
+                await restoreSession();
                 if (!isAuthenticated()) {
                     window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
                     return;
@@ -380,7 +383,7 @@
                     this.isNew = true;
                     this.loading = false;
                     try {
-                        const token = localStorage.getItem('token');
+                        const token = getToken();
                         const res = await fetch('/api/agents', { headers: { Authorization: `Bearer ${token}` } });
                         if (res.ok) {
                             const data = await res.json();
@@ -392,7 +395,7 @@
                 }
 
                 try {
-                    const token = localStorage.getItem('token');
+                    const token = getToken();
                     const res = await fetch(`/api/teams/${teamId}`, {
                         headers: { Authorization: `Bearer ${token}` }
                     });
@@ -441,7 +444,7 @@
             },
 
             async loadRuns() {
-                const token = localStorage.getItem('token');
+                const token = getToken();
                 const res = await fetch(`/api/teams/${this.team.id}/runs`, {
                     headers: { Authorization: `Bearer ${token}` }
                 });
@@ -468,7 +471,7 @@
                 this.logs = [];
                 this.finalOutput = '';
                 try {
-                    const token = localStorage.getItem('token');
+                    const token = getToken();
                     const res = await fetch(`/api/teams/${this.team.id}/run`, {
                         method: 'POST',
                         headers: {
@@ -493,7 +496,7 @@
 
             streamRun(runId) {
                 if (this.eventSource) this.eventSource.close();
-                const token = localStorage.getItem('token');
+                const token = getToken();
                 this.eventSource = new EventSource(`/api/teams/${this.team.id}/runs/${runId}/stream?token=${encodeURIComponent(token)}`);
                 this.eventSource.onmessage = (e) => {
                     try {
@@ -561,7 +564,7 @@
             },
 
             async fetchRun(runId) {
-                const token = localStorage.getItem('token');
+                const token = getToken();
                 const res = await fetch(`/api/teams/${this.team.id}/runs/${runId}`, {
                     headers: { Authorization: `Bearer ${token}` }
                 });
@@ -578,7 +581,7 @@
                 this.creating = true;
                 this.createError = '';
                 try {
-                    const token = localStorage.getItem('token');
+                    const token = getToken();
                     const body = {
                         name: this.createForm.name,
                         description: this.createForm.description || null,

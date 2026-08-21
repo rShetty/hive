@@ -11,10 +11,13 @@
  */
 
 function isHiveAuthed() {
-  return !!localStorage.getItem('token');
+  // Issue #11: token is in memory only (see app.js); fall back to the
+  // legacy localStorage value so already-open tabs keep rendering the nav.
+  return !!getToken() || !!localStorage.getItem('token');
 }
 
 function hiveLogout() {
+  setToken(null);
   localStorage.removeItem('token');
   fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
   window.location.href = '/login';

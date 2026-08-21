@@ -25,6 +25,12 @@ WORKDIR /app/backend
 # Create directory for SQLite database
 RUN mkdir -p /data
 
+# Harden: run as an unprivileged user instead of root. /data (SQLite) and /app
+# must be writable by the app user (local agent logs land under docker/).
+RUN useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin hive \
+    && chown -R hive:hive /app /data
+USER hive
+
 # Expose port
 ENV PORT=8080
 EXPOSE 8080

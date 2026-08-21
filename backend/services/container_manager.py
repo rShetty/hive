@@ -144,7 +144,10 @@ def create_container(
                 "hive/agent-id": agent_id,
                 "hive/agent-name": agent_name,
                 "hive/managed": "true"
-            }
+            },
+            # Hardening: resource limits, cap drop, no-new-privileges,
+            # (optionally) read-only rootfs — see build_agent_container_limits().
+            **build_agent_container_limits(),
         )
         return container.id, port
     except Exception as e:
@@ -233,6 +236,59 @@ def get_container_status(container_id: str) -> str:
 
 OPENCLAW_IMAGE = os.getenv("OPENCLAW_IMAGE", "openclaw/openclaw:latest")
 OPENCLAW_INTERNAL_PORT = 8080
+
+
+# ── Container hardening defaults (issue #6) ──────────────────────────────────
+# All values configurable via env with sane least-privilege defaults.
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _read_only_rootfs_default() -> bool:
+    return os.getenv("AGENT_READ_ONLY_ROOTFS", "1").lower() not in ("0", "false", "no")
+
+
+def build_agent_container_limits() -> dict:
+    """Build the hardened runtime kwargs passed to ``containers.run``.
+
+    Returns resource limits (CPU/mem/pids), capability drop, no-new-privileges
+    and an optional read-only rootfs. Pure function of the environment so it
+    can be unit-tested without a Docker daemon.
+    """
+    kwargs: dict = {
+        # Resource limits — prevent a runaway/compromised agent from starving
+        # the host or fork-bombing it.
+        "nano_cpus": int(_env_float("AGENT_CPU_LIMIT", 0.5) * 1e9),
+        "mem_limit": os.getenv("AGENT_MEM_LIMIT", "256m"),
+        "pids_limit": _env_int("AGENT_PIDS_LIMIT", 128),
+        # Drop ALL Linux capabilities; operators may re-add specific ones via
+        # AGENT_ADDED_CAPS (comma-separated) when an image genuinely needs one.
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+    }
+    added_caps = [
+        c.strip() for c in os.getenv("AGENT_ADDED_CAPS", "").split(",") if c.strip()
+    ]
+    if added_caps:
+        kwargs["cap_add"] = added_caps
+
+    # Read-only root filesystem with a small writable tmpfs at /tmp. Disable
+    # with AGENT_READ_ONLY_ROOTFS=0 for images that must write to their own fs.
+    if _read_only_rootfs_default():
+        kwargs["read_only"] = True
+        kwargs["tmpfs"] = {"/tmp": "rw,nosuid,size=64m"}
+    return kwargs
 
 
 def create_openclaw_container(
@@ -338,6 +394,9 @@ def create_openclaw_container(
             detach=True,
             restart_policy={"Name": "unless-stopped"},
             labels=labels,
+            # Hardening: resource limits, cap drop, no-new-privileges,
+            # (optionally) read-only rootfs — see build_agent_container_limits().
+            **build_agent_container_limits(),
         )
         return container.id, port
     except Exception as e:

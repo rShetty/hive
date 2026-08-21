@@ -16,6 +16,11 @@ RUN pip install --no-cache-dir \
 
 COPY agent_app/ /app/
 
+# Harden: run as an unprivileged user instead of root.
+RUN useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin openclaw \
+    && chown -R openclaw:openclaw /app
+USER openclaw
+
 EXPOSE 9000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

@@ -35,5 +35,9 @@ USER hive
 ENV PORT=8080
 EXPOSE 8080
 
-# Run the application
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Apply database migrations (alembic upgrade head) BEFORE the app boots, then
+# start uvicorn. The wrapper is idempotent: fresh databases get the baseline
+# schema, legacy create_all databases are stamped at 0001_baseline, and a
+# failed migration never blocks boot on an existing healthy DB (set
+# ALEMBIC_STRICT=1 to make failures fatal). See docs/LLD/14-migrations.md.
+CMD ["sh", "-c", "python -m migrations.run_migrations && exec python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]

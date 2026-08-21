@@ -20,6 +20,8 @@ jobs:
     permissions:
       contents: read
     steps:
+      # fetch-depth: 0 is REQUIRED: gitleaks must scan the FULL commit history.
+      # Never reduce this to a shallow clone.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
@@ -149,6 +151,16 @@ jobs:
             exit 1
           fi
           echo ".env is properly gitignored."
+
+      - name: Fail if .env is ever tracked in git
+        run: |
+          TRACKED="$(git ls-files | grep -E '(^|/)\.env$' || true)"
+          if [ -n "$TRACKED" ]; then
+            echo "::error::.env is tracked in git: $TRACKED"
+            echo "::error::Remove it from the index ('git rm --cached .env') and rotate EVERY value inside it (see docs/security/KEY_ROTATION.md)."
+            exit 1
+          fi
+          echo ".env is not tracked."
 
       - name: Check for SQL injection patterns
         run: |

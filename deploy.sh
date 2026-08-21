@@ -86,24 +86,25 @@ if [ -z "$ENCRYPTION_KEY" ] || [ -z "$SECRET_KEY" ] || [ -z "$HIVE_SIGNING_SECRE
     fi
 fi
 
-# Check if required environment variables are set
+# Check if required environment variables are set.
+# SECURITY: missing keys are generated silently — values are never echoed to
+# stdout; they are persisted directly to a mode-600 file on the server.
 KEYS_GENERATED=false
 if [ -z "$ENCRYPTION_KEY" ]; then
-    log_warn "ENCRYPTION_KEY not set. Generating a random one..."
-    export ENCRYPTION_KEY=$(openssl rand -hex 32)
+    log_warn "ENCRYPTION_KEY not set. Generating one silently..."
+    export ENCRYPTION_KEY="$(openssl rand -hex 32)"
     KEYS_GENERATED=true
-    log_warn "⚠️  IMPORTANT: Save the generated keys! They will be displayed at the end."
 fi
 
 if [ -z "$SECRET_KEY" ]; then
-    log_warn "SECRET_KEY not set. Generating a random one..."
-    export SECRET_KEY=$(openssl rand -hex 32)
+    log_warn "SECRET_KEY not set. Generating one silently..."
+    export SECRET_KEY="$(openssl rand -hex 32)"
     KEYS_GENERATED=true
 fi
 
 if [ -z "$HIVE_SIGNING_SECRET" ]; then
-    log_warn "HIVE_SIGNING_SECRET not set. Generating a random one..."
-    export HIVE_SIGNING_SECRET=$(openssl rand -hex 32)
+    log_warn "HIVE_SIGNING_SECRET not set. Generating one silently..."
+    export HIVE_SIGNING_SECRET="$(openssl rand -hex 32)"
     KEYS_GENERATED=true
 fi
 
@@ -247,6 +248,10 @@ networks:
     driver: bridge
 DOCKEREOF
 
+# The generated compose file embeds secret values in environment entries —
+# keep it root-only.
+chmod 600 docker-compose.prod.yml
+
 # Ensure the SSH key used for OpenClaw deploys exists and is named correctly.
 # The container mounts /root/.ssh read-only, so we just alias the key.
 if [ -f "${OC_SSH_KEY}" ]; then
@@ -326,22 +331,19 @@ else
     log_info "Check logs with: ssh $REMOTE_HOST 'cd /opt/${APP_NAME} && docker-compose -f docker-compose.prod.yml logs -f'"
 fi
 
-# Persist keys to server .env if they were generated this run
+# Persist keys to server .env if they were generated this run.
+# SECURITY: values travel over SSH stdin only (never argv, never stdout) and
+# the remote file is written with umask 077 + explicit chmod 600.
 if [ "$KEYS_GENERATED" = true ]; then
-    log_info "Saving generated keys to /opt/${APP_NAME}/.env on server..."
-    ssh "$REMOTE_HOST" "cat > /opt/${APP_NAME}/.env << 'ENVEOF'
-ENCRYPTION_KEY=${ENCRYPTION_KEY}
-SECRET_KEY=${SECRET_KEY}
-HIVE_SIGNING_SECRET=${HIVE_SIGNING_SECRET}
-ENVEOF"
+    log_info "Saving generated keys to /opt/${APP_NAME}/.env on server (mode 600, values not printed)..."
+    printf 'ENCRYPTION_KEY=%s\nSECRET_KEY=%s\nHIVE_SIGNING_SECRET=%s\n' \
+        "$ENCRYPTION_KEY" "$SECRET_KEY" "$HIVE_SIGNING_SECRET" \
+        | ssh "$REMOTE_HOST" "umask 077 && cat > /opt/${APP_NAME}/.env && chmod 600 /opt/${APP_NAME}/.env"
     log_info ""
     log_warn "⚠️  IMPORTANT: New keys were generated and saved to /opt/${APP_NAME}/.env on the server."
     log_warn "All previously encrypted data is unreadable with the new key."
-    echo ""
-    echo "export ENCRYPTION_KEY='${ENCRYPTION_KEY}'"
-    echo "export SECRET_KEY='${SECRET_KEY}'"
-    echo "export HIVE_SIGNING_SECRET='${HIVE_SIGNING_SECRET}'"
-    echo ""
+    log_warn "Values are intentionally NOT printed. Retrieve them deliberately if needed:"
+    log_warn "  ssh $REMOTE_HOST 'cat /opt/${APP_NAME}/.env'"
 fi
 
 log_info ""

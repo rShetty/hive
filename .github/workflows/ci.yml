@@ -184,7 +184,7 @@ jobs:
           echo "Docker-compose files use secrets/env vars correctly."
 
   backend-smoke:
-    name: Backend Smoke Test (compileall + pytest collection)
+    name: Backend Smoke Test (compileall + pytest)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -214,8 +214,11 @@ jobs:
       - name: Byte-compile backend sources (python -m compileall)
         run: .venv-enterprise/bin/python -m compileall backend
 
-      - name: Pytest collection (import checks)
-        run: .venv-enterprise/bin/python -m pytest --collect-only -q
+      # Issue #10: run the unit tests, not just collection. The suite is
+      # hermetic (conftest.py provides SECRET_KEY/HIVE_SIGNING_SECRET and a
+      # temp SQLite DB), so no services are needed.
+      - name: Unit tests (pytest)
+        run: .venv-enterprise/bin/python -m pytest -q
 
   deploy:
     name: Deploy to VPS

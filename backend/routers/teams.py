@@ -28,6 +28,9 @@ from services import delegation_hub
 
 async def _check_agent_alive(agent: Agent) -> bool:
     """Quick health check: ping the agent's /health endpoint directly."""
+    # Issue #17 (SSRF): only contact endpoints that pass the public-URL guard.
+    from services.url_guard import validate_public_http_url
+
     # For managed agents with an internal_port, check the port directly
     if agent.internal_port:
         try:
@@ -44,6 +47,8 @@ async def _check_agent_alive(agent: Agent) -> bool:
         if endpoint.startswith("/"):
             base_url = MARKETPLACE_URL
             endpoint = f"{base_url}{endpoint}"
+        else:
+            validate_public_http_url(endpoint)
         health_url = endpoint.replace("/invoke", "/health")
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{health_url}?token=x")
@@ -511,7 +516,17 @@ async def _run_team_delegation(
         await add_delegation_log(root_delegation_id, "info", "Asking root agent to plan delegations")
 
         # Call root agent's /invoke endpoint directly for planning
-        invoke_url = f"{MARKETPLACE_URL}{root_agent_endpoint}" if root_agent_endpoint.startswith("/") else root_agent_endpoint
+        # Issue #17 (SSRF): relative endpoints resolve to this Hive instance
+        # (trusted); absolute endpoints must pass the public-URL guard.
+        from services.url_guard import validate_public_http_url
+        if root_agent_endpoint.startswith("/"):
+            invoke_url = f"{MARKETPLACE_URL}{root_agent_endpoint}"
+        else:
+            try:
+                invoke_url = validate_public_http_url(root_agent_endpoint)
+            except ValueError as e:
+                await _fail_team_run(team_run_id, root_delegation_id, f"Root agent endpoint rejected: {e}")
+                return
         plan_payload = {
             "task": plan_prompt,
             "max_tokens": max_tokens,
@@ -763,19 +778,30 @@ async def _run_team_delegation(
         await add_delegation_log(root_delegation_id, "info", "Synthesizing final answer from sub-results")
 
         # Call root agent's /invoke directly for synthesis
-        synthesis_url = f"{MARKETPLACE_URL}{root_agent_endpoint}" if root_agent_endpoint.startswith("/") else root_agent_endpoint
+        # Issue #17 (SSRF): same endpoint policy as the planning call above.
+        from services.url_guard import validate_public_http_url as _vpu
+        if root_agent_endpoint.startswith("/"):
+            synthesis_url = f"{MARKETPLACE_URL}{root_agent_endpoint}"
+        else:
+            try:
+                synthesis_url = _vpu(root_agent_endpoint)
+            except ValueError:
+                synthesis_url = None
         synthesis_payload = {
             "task": synthesis_prompt,
             "max_tokens": max_tokens,
             "context": context,
         }
         final_output = results_text
+        if not synthesis_url:
+            await add_delegation_log(root_delegation_id, "warning", "Synthesis skipped: endpoint rejected")
         try:
-            async with httpx.AsyncClient(timeout=min(AGENT_DELEGATION_TIMEOUT, 120)) as http_client:
-                synth_resp = await http_client.post(synthesis_url, json=synthesis_payload)
-                synth_resp.raise_for_status()
-                synth_body = synth_resp.json()
-                final_output = synth_body.get("result", {}).get("output", results_text)
+            if synthesis_url:
+                async with httpx.AsyncClient(timeout=min(AGENT_DELEGATION_TIMEOUT, 120)) as http_client:
+                    synth_resp = await http_client.post(synthesis_url, json=synthesis_payload)
+                    synth_resp.raise_for_status()
+                    synth_body = synth_resp.json()
+                    final_output = synth_body.get("result", {}).get("output", results_text)
         except Exception as e:
             await add_delegation_log(root_delegation_id, "warning", f"Synthesis call failed: {e}")
 

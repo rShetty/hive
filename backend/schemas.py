@@ -138,6 +138,23 @@ class AgentCreate(AgentBase):
     endpoint_url: Optional[str] = None
     agent_type: str = "managed"  # managed | external | openclaw
 
+    @field_validator("endpoint_url")
+    @classmethod
+    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
+        """SSRF guard (issue #17): BYOA endpoints are contacted server-side.
+
+        Delegation dispatch, health checks and skill discovery all fetch this
+        URL from the Hive backend, so it must never target loopback, private
+        or link-local (cloud metadata) addresses.
+        """
+        if v is None:
+            return v
+        from services.url_guard import validate_public_http_url
+        try:
+            return validate_public_http_url(v)
+        except ValueError as e:
+            raise ValueError(f"endpoint_url: {e}")
+
 
 class AgentResponse(AgentBase):
     id: str
@@ -392,6 +409,22 @@ class TransactionCreate(HiveBaseModel):
     callback_url: Optional[str] = None
     timeout_seconds: int = 300
 
+    @field_validator("callback_url")
+    @classmethod
+    def validate_callback_url(cls, v: Optional[str]) -> Optional[str]:
+        """SSRF guard (issue #17) — same policy as DelegationRequest.
+
+        TransactionCreate previously accepted ANY callback URL; the value is
+        forwarded to agents and used in server-side callback POSTs.
+        """
+        if v is None:
+            return v
+        from services.url_guard import validate_public_http_url
+        try:
+            return validate_public_http_url(v)
+        except ValueError as e:
+            raise ValueError(f"callback_url: {e}")
+
 
 class TransactionResponse(HiveBaseModel):
     id: str
@@ -428,34 +461,21 @@ class DelegationRequest(HiveBaseModel):
     @field_validator("callback_url")
     @classmethod
     def validate_callback_url(cls, v: Optional[str]) -> Optional[str]:
-        """Validate callback URL to prevent SSRF attacks."""
+        """Validate callback URL to prevent SSRF attacks.
+
+        Issue #17: uses the shared resolver-based guard so hostnames that
+        resolve to loopback/private/link-local addresses (cloud metadata,
+        127.0.0.1, RFC1918, ::1, IPv4-mapped IPv6, ...) are rejected —
+        not just hosts literally named "localhost".
+        """
         if v is None:
             return v
-        
-        from urllib.parse import urlparse
-        parsed = urlparse(v)
-        
-        # Must be HTTP/HTTPS
-        if parsed.scheme not in ["http", "https"]:
-            raise ValueError("Callback URL must use HTTP or HTTPS")
-        
-        # Block private IP ranges (basic SSRF protection)
-        hostname = parsed.hostname
-        if hostname:
-            import ipaddress
-            try:
-                ip = ipaddress.ip_address(hostname)
-                if ip.is_private or ip.is_loopback or ip.is_link_local:
-                    raise ValueError("Callback URL cannot point to private IP addresses")
-            except ValueError:
-                # Not an IP address, probably a domain - allow it
-                pass
-        
-        # Block localhost variations
-        if hostname and hostname.lower() in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
-            raise ValueError("Callback URL cannot be localhost")
-        
-        return v
+
+        from services.url_guard import validate_public_http_url
+        try:
+            return validate_public_http_url(v)
+        except ValueError as e:
+            raise ValueError(f"callback_url: {e}")
     
     @field_validator("max_tokens")
     @classmethod

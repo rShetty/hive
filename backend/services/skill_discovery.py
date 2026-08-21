@@ -24,7 +24,18 @@ async def discover_agent_skills(
     if not agent.endpoint_url:
         return []
     
-    base_url = agent.endpoint_url.rstrip("/")
+    # Issue #17 (SSRF): discovery contacts the agent endpoint from the Hive
+    # backend and ingests its response as skill metadata. Only public
+    # endpoints may be probed. (Relative endpoints are managed agents served
+    # by this instance and need no check.)
+    if not agent.endpoint_url.startswith("/"):
+        from services.url_guard import validate_public_http_url
+        try:
+            base_url = validate_public_http_url(agent.endpoint_url).rstrip("/")
+        except ValueError:
+            return []
+    else:
+        base_url = agent.endpoint_url.rstrip("/")
     
     async with httpx.AsyncClient(timeout=timeout) as client:
         # Try well-known location first

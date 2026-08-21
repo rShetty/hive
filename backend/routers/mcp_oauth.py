@@ -68,6 +68,16 @@ async def _discover(server: MCPServer) -> dict:
     base = server.url.rstrip("/")
     host = urlparse(base).netloc.lower()
 
+    # Issue #17 (SSRF): the URL was validated at registration time, but
+    # re-check it here — DNS may have changed (DNS-rebinding) or the row may
+    # predate validation. Discovery results are trusted for auth redirects,
+    # so fail closed.
+    from services.url_guard import validate_public_http_url
+    try:
+        validate_public_http_url(base)
+    except ValueError as e:
+        raise HTTPException(400, f"MCP server URL is not reachable: {e}")
+
     # GitHub's remote MCP server does not publish OAuth metadata and does not
     # support dynamic client registration. It authenticates against GitHub's
     # own OAuth endpoints and requires a ``resource`` parameter equal to the
@@ -262,6 +272,17 @@ async def callback(
     if not flow.get("token_endpoint"):
         raise HTTPException(502, "Missing token endpoint")
 
+    # Issue #17 (SSRF): the token endpoint comes from (attacker-influenceable)
+    # discovery metadata — verify it points at a public host before the
+    # backend POSTs the authorization code + client secret to it.
+    from services.url_guard import validate_public_http_url
+    try:
+        validate_public_http_url(flow["token_endpoint"])
+        if flow.get("resource"):
+            validate_public_http_url(flow["resource"])
+    except ValueError as e:
+        raise HTTPException(400, f"OAuth token endpoint rejected: {e}")
+
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -321,6 +342,13 @@ async def refresh(
     token_endpoint = blob.get("token_endpoint")
     if not refresh_token or not token_endpoint:
         raise HTTPException(400, "No refresh token available")
+
+    # Issue #17 (SSRF): stored endpoints are re-validated before use.
+    from services.url_guard import validate_public_http_url
+    try:
+        validate_public_http_url(token_endpoint)
+    except ValueError as e:
+        raise HTTPException(400, f"Stored token endpoint rejected: {e}")
 
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         _rdata = {

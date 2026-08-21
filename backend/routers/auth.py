@@ -67,15 +67,26 @@ async def register(request: Request, user_data: UserCreate, db: AsyncSession = D
 @limiter.limit(RATE_LIMITS["auth_login"])
 async def login(request: Request, response: Response, login_data: LoginRequest, db: AsyncSession = Depends(get_db)):
     """Login — returns a short-lived access token and sets a long-lived refresh cookie."""
+    # Per-username lockout backoff (brute-force protection on top of the
+    # per-IP rate limit). Failures within the window accumulate; once the
+    # threshold is hit, attempts are rejected until the window expires.
+    from services.login_lockout import assert_not_locked_out as _assert_not_locked_out_impl
+    _assert_not_locked_out_impl(login_data.email)
+
     result = await db.execute(select(User).where(User.email == login_data.email))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(login_data.password, user.hashed_password):
+        from services.login_lockout import record_failure as _record_failure_impl
+        _record_failure_impl(login_data.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    from services.login_lockout import clear as _clear_failures_impl
+    _clear_failures_impl(login_data.email)
 
     access_token = create_access_token(data={"sub": user.id})
     refresh_token = create_refresh_token(user.id)

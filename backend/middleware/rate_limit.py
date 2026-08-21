@@ -34,9 +34,28 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Res
 
 
 # Rate limit configurations for different endpoints
+def _login_rate_limit() -> str:
+    """Per-IP + per-username login limit. Brute-force protection default:
+    5 attempts/minute (configurable via LOGIN_RATE_LIMIT_PER_MIN)."""
+    try:
+        per_min = int(os.environ.get("LOGIN_RATE_LIMIT_PER_MIN", "5"))
+        return f"{max(1, per_min)}/minute"
+    except ValueError:
+        return "5/minute"
+
+
+def _login_lockout_threshold() -> int:
+    """Failed attempts within the lockout window before backoff engages."""
+    try:
+        return max(3, int(os.environ.get("LOGIN_LOCKOUT_THRESHOLD", "10")))
+    except ValueError:
+        return 10
+
+
 RATE_LIMITS = {
-    # Authentication endpoints
-    "auth_login": "120/minute",
+    # Authentication endpoints — brute-force protection (per-IP; the login
+    # handler additionally tracks per-username failures for lockout backoff)
+    "auth_login": _login_rate_limit(),
     "auth_register": "600/hour",
     
     # Agent registration

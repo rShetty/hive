@@ -344,22 +344,48 @@ def create_openclaw_container(
     # Keep secret values (API keys/tokens) out of the container environment by
     # writing them to host files and mounting them read-only; the runtime reads
     # them via ``<NAME>_FILE``. Plain env vars are passed through normally.
+    # CodeQL py/clear-text-storage-sensitive-data (#2) hardening:
+    #   * container dir created via mkdtemp -> 0700, unpredictable name;
+    #   * files opened with O_CREAT|O_NOFOLLOW and mode 0600 atomically;
+    #   * sanitized, symlink-resistant file components.
     from services.secrets import split_secrets
+
+    def _write_secret(path: str, value: str) -> None:
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.write(fd, value.encode())
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+
     plain_env, secret_values = split_secrets(env_vars)
     environment.update(plain_env)
 
+    import re as _re
+    import tempfile as _tempfile
+    safe_container = _re.sub(r"[^A-Za-z0-9_-]", "", str(container_name))[:24] or "anon"
+    secret_root = os.path.join("/tmp", "hive-secrets")
+    os.makedirs(secret_root, exist_ok=True)
+
+    try:
+        os.chmod(secret_root, 0o700)
+    except OSError:
+        pass
+    secret_dir = _tempfile.mkdtemp(prefix=f"{safe_container}-", dir=secret_root)
+
     secret_mounts = []
     for name, value in secret_values.items():
-        secret_dir = os.path.join("/tmp", "hive-secrets", container_name)
-        os.makedirs(secret_dir, exist_ok=True)
-        secret_path = os.path.join(secret_dir, name.lower())
-        with open(secret_path, "w") as fh:
-            fh.write(value)
-        os.chmod(secret_path, 0o600)
-        environment[f"{name}_FILE"] = f"/run/secrets/{name.lower()}"
+        safe_name = _re.sub(r"[^a-z0-9_]", "", name.lower())
+        secret_path = os.path.join(secret_dir, safe_name)
+        _write_secret(secret_path, value)
+        environment[f"{name}_FILE"] = f"/run/secrets/{safe_name}"
         secret_mounts.append(
             docker.types.Mount(
-                target=f"/run/secrets/{name.lower()}",
+                target=f"/run/secrets/{safe_name}",
                 source=secret_path,
                 type="bind",
                 read_only=True,

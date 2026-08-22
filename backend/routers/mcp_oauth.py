@@ -31,6 +31,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.mcp import MCPServer
+
+
+def _mcp_oauth_hostname(url: str) -> str:
+    """Lower-cased hostname of ``url`` (CodeQL #1: exact-host comparison)."""
+    try:
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        return ""
+    return host.rstrip(".").lower()
 from models.user import User
 from schemas import MCPServerResponse
 from services.crypto import encrypt_json, decrypt_json
@@ -82,7 +91,10 @@ async def _discover(server: MCPServer) -> dict:
     # support dynamic client registration. It authenticates against GitHub's
     # own OAuth endpoints and requires a ``resource`` parameter equal to the
     # MCP server URL so the issued token is scoped to that resource.
-    if "githubcopilot.com" in host:
+    # CodeQL py/incomplete-url-substring-sanitization (#1): compare the parsed
+    # hostname — never a substring of the full URL, which look-alikes such as
+    # ``githubcopilot.com.evil.test`` would otherwise spoof.
+    if _mcp_oauth_hostname(base) in ("githubcopilot.com", "www.githubcopilot.com"):
         return {
             "issuer": "https://github.com",
             "authorization_endpoint": "https://github.com/login/oauth/authorize",

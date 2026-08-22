@@ -36,10 +36,14 @@ def publish(delegation_id: str, event: Dict[str, Any]) -> None:
         try:
             q.put_nowait(event)
         except asyncio.QueueFull:
+            # CodeQL py/log-injection (#22): event type can originate from
+            # agent-supplied payloads — strip control chars before logging.
+            import re as _re
+            evt_type = _re.sub(r"[\r\n\x00-\x1f]", " ", str(event.get("type")))[:64]
             log.warning(
                 "SSE queue full for delegation %s — dropping event of type %s",
                 delegation_id,
-                event.get("type"),
+                evt_type,
             )
 
 

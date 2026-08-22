@@ -186,17 +186,43 @@ def spawn_openclaw_agent(
     # Secret values (API keys/tokens) are written to files and exposed via
     # ``<NAME>_FILE`` instead of plaintext env, so they don't leak into the
     # process environment / ps output.
+    # CodeQL py/clear-text-storage-sensitive-data (#29) hardening:
+    #   * per-process dir created via mkdtemp -> 0700, unpredictable name;
+    #   * files opened with O_CREAT|O_NOFOLLOW and mode 0600 atomically
+    #     (no window where a umask-derived mode applies);
+    #   * symlink-resistant component names.
     from services.secrets import split_secrets
+
+    def _write_secret(path: str, value: str) -> None:
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.write(fd, value.encode())
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+
     plain_env, secret_values = split_secrets({**forwarded_env, **(env_vars or {})})
 
+    import re as _re
+    safe_proc = _re.sub(r"[^A-Za-z0-9_-]", "", str(agent_id))[:12] or "anon"
+    secret_root = os.path.join("/tmp", "hive-secrets")
+    os.makedirs(secret_root, exist_ok=True)
+
+    import tempfile as _tempfile
+    try:
+        os.chmod(secret_root, 0o700)
+    except OSError:
+        pass
+    secret_dir = _tempfile.mkdtemp(prefix=f"proc-{safe_proc}-", dir=secret_root)
+
     secret_file_env = {}
-    secret_dir = os.path.join("/tmp", "hive-secrets", f"proc-{agent_id[:8]}")
-    os.makedirs(secret_dir, exist_ok=True)
     for name, value in secret_values.items():
-        secret_path = os.path.join(secret_dir, name.lower())
-        with open(secret_path, "w") as fh:
-            fh.write(value)
-        os.chmod(secret_path, 0o600)
+        secret_path = os.path.join(secret_dir, _re.sub(r"[^a-z0-9_]", "", name.lower()))
+        _write_secret(secret_path, value)
         secret_file_env[f"{name}_FILE"] = secret_path
 
     env = {

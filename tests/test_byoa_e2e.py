@@ -31,6 +31,25 @@ from typing import Optional
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
+def _scrub_secrets(text: str) -> str:
+    """Mask credential-shaped substrings before logging (CodeQL #5).
+
+    Covers agent API keys (hv_...), bearer/JWT tokens and OpenRouter keys so
+    response fragments echoed in failure details never leak secrets to CI.
+    """
+    import re as _re
+    patterns = (
+        (r"(hv_[A-Za-z0-9_\-]{6})[A-Za-z0-9_\-]+", r"\1…"),
+        (r"(sk-or-[A-Za-z0-9_\-]{6})[A-Za-z0-9_\-]+", r"\1…"),
+        (r"(Bearer\s+[A-Za-z0-9_\-\.]{8})[A-Za-z0-9_\-\.]+", r"\1…"),
+        (r'"api_key"(\s*:\s*")([^"]{4})[^"]*(")', r'\1"\2…\3'),
+    )
+    out = text
+    for pat, rep in patterns:
+        out = _re.sub(pat, rep, out)
+    return out
+
+
 def _req(method: str, url: str, body=None, headers: dict | None = None,
          token: str = None, api_key: str = None, timeout: int = 60):
     """Single HTTP call.  Returns (status, body_str)."""
@@ -92,6 +111,9 @@ class ByoaHarness:
         self.checks.append(Check(name, ok, detail))
         mark = "PASS" if ok else "FAIL"
         suffix = f" -- {detail}" if detail and not ok else ""
+        # CodeQL py/clear-text-logging-sensitive-data (#5): scrub anything that
+        # looks like a credential before it reaches the console/CI log.
+        suffix = _scrub_secrets(suffix)
         print(f"  [{mark}] {name}{suffix}")
 
     def _post(self, path, body, token=None, **kw):

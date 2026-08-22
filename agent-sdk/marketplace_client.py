@@ -299,7 +299,11 @@ if __name__ == "__main__":
         skill_names=["terminal", "web_extract"],
     )
     print(f"Registered with ID: {result['agent_id']}")
-    print(f"API Key: {result['api_key'][:6]}****  (masked)")
+    # CodeQL py/clear-text-logging-sensitive-data (#4): never print the key —
+    # show only a prefix + length so operators can confirm which credential
+    # arrived without exposing it in terminals/CI logs.
+    _key = result.get("api_key") or ""
+    print(f"API Key: {_key[:4]}… (masked, {len(_key)} chars)")
 
     # ------- Example 2: BYOA external agent -------
     # byoa = MarketplaceClient("http://localhost:8000")

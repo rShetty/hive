@@ -206,7 +206,7 @@ jobs:
         run: |
           set -e
           python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt "pytest==7.4.4" "pytest-asyncio==0.23.3" httpx
+          python -m pip install -r backend/requirements.txt httpx
 
       - name: Byte-compile backend sources (python -m compileall)
         run: python -m compileall backend

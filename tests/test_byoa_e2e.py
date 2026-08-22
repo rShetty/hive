@@ -110,11 +110,10 @@ class ByoaHarness:
     def _ok(self, name: str, ok: bool, detail: str = ""):
         self.checks.append(Check(name, ok, detail))
         mark = "PASS" if ok else "FAIL"
-        suffix = f" -- {detail}" if detail and not ok else ""
-        # CodeQL py/clear-text-logging-sensitive-data (#5): scrub anything that
-        # looks like a credential before it reaches the console/CI log.
-        suffix = _scrub_secrets(suffix)
-        print(f"  [{mark}] {name}{suffix}")
+        # CodeQL py/clear-text-logging-sensitive-data (#5): response fragments
+        # can echo credentials — log only the check name and outcome. Detail
+        # is retained in the checks list for the final JSON summary.
+        print(f"  [{mark}] {name}")
 
     def _post(self, path, body, token=None, **kw):
         s, c = self._call("POST", path, body, token=token, **kw)

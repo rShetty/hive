@@ -303,7 +303,9 @@ if __name__ == "__main__":
     # show only a prefix + length so operators can confirm which credential
     # arrived without exposing it in terminals/CI logs.
     _key = result.get("api_key") or ""
-    print(f"API Key: {_key[:4]}… (masked, {len(_key)} chars)")
+    # CodeQL py/clear-text-logging-sensitive-data (#30): even a prefix can be
+    # too much in shared CI logs — print only the length fingerprint.
+    print(f"API Key received: <redacted, {len(_key)} chars>")
 
     # ------- Example 2: BYOA external agent -------
     # byoa = MarketplaceClient("http://localhost:8000")

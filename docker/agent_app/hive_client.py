@@ -73,10 +73,10 @@ def hive_callback_url(path: str, *segments: object) -> str | None:
     for seg in segments:
         text = str(seg)
         if not _SEGMENT_RE.fullmatch(text):
-            logger.warning(
-                "Rejecting callback with invalid segment %r",
-                sanitize_log_text(text, 64),
-            )
+            # CodeQL py/log-injection (#32): the rejected segment is
+            # attacker-controlled — repr() escapes CR/LF so a forged log
+            # entry is impossible; truncated for line hygiene.
+            logger.warning("Rejecting callback with invalid segment: %r", text[:64])
             return None
         clean_segments.append(text)
     url = f"{base}/{clean_path}"

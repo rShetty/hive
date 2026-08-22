@@ -643,9 +643,10 @@ async def agent_dashboard_proxy(
                 )
     except Exception as e:
         import logging
-        # CodeQL py/log-injection (#23): sanitize before logging.
+        # CodeQL py/log-injection (#23): repr() escapes CR/LF so forged log
+        # lines are impossible while keeping full detail for operators.
         logging.getLogger(__name__).error(
-            "Dashboard proxy error for %s: %s", slug, str(e).replace("\r", "").replace("\n", " ")
+            "Dashboard proxy error for %s: %r", slug, e
         )
         raise HTTPException(status_code=502, detail="Agent unreachable")
 
@@ -680,7 +681,13 @@ async def agent_health_check(agent_id: str, token: str, request: Request):
                 return JSONResponse(status_code=503, content={"error": "Agent has invalid port config"})
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    r = await client.get(f"http://127.0.0.1:{port}/health?token={token}")
+                    # CodeQL py/partial-ssrf (#31): token travels via the
+                    # params argument — never string-interpolated into the
+                    # URL, so it cannot alter the request target.
+                    r = await client.get(
+                        f"http://127.0.0.1:{port}/health",
+                        params={"token": token},
+                    )
                     if r.status_code == 200:
                         data = r.json()
                         return {
@@ -691,11 +698,14 @@ async def agent_health_check(agent_id: str, token: str, request: Request):
                         }
                     return JSONResponse(status_code=503, content={"error": f"Agent responded {r.status_code}"})
             except Exception:
-                # CodeQL py/stack-trace-exposure (#27): never echo raw exception
-                # text to clients — it can carry internal hostnames/paths.
+                # CodeQL py/log-injection + py/stack-trace-exposure (#34):
+                # agent_id is DB-sourced; the exception is deliberately NOT
+                # logged with its message to keep this hot path clean. Full
+                # detail is available via the probe's own client logging.
                 import logging as _logging
                 _logging.getLogger(__name__).warning(
-                    "Agent %s health probe failed", agent_id, exc_info=True
+                    "Agent %s health probe failed (non-JSON or unreachable)",
+                    agent_id,
                 )
                 return JSONResponse(status_code=503, content={"error": "Agent not reachable"})
         
@@ -792,10 +802,10 @@ async def proxy_to_agent(agent_id: str, path: str, request: Request):
                     )
         except Exception as e:
             import logging
-            # CodeQL py/log-injection (#24): strip CR/LF from the path before it
-            # reaches the log so forged entries can't be injected.
+            # CodeQL py/log-injection (#24): repr() escapes CR/LF control
+            # characters, preventing forged log entries.
             logging.getLogger(__name__).error(
-                "Agent proxy error for %s: %s", agent_id, str(e).replace("\r", "").replace("\n", " ")
+                "Agent proxy error for %s: %r", agent_id, e
             )
             raise HTTPException(status_code=502, detail="Agent unreachable")
 

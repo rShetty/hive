@@ -585,10 +585,15 @@ async def agent_dashboard_proxy(
     # DB-sourced port and percent-encode the user-controlled path so the final
     # request target can never escape http://127.0.0.1:<fixed-port>/.
     from urllib.parse import quote as _url_quote
+    raw_path = path.lstrip("/")
+    # Defense-in-depth: reject dot segments outright (quote(safe="/") alone
+    # would preserve "..").
+    if any(seg in ("..", ".") for seg in raw_path.split("/")):
+        raise HTTPException(status_code=400, detail="Invalid path")
     port = int(agent.internal_port)
     if not (1 <= port <= 65535):
         raise HTTPException(status_code=503, detail="Agent has invalid port config")
-    safe_path = _url_quote(path.lstrip("/"), safe="/~")
+    safe_path = _url_quote(raw_path, safe="/~")
     target_url = f"http://127.0.0.1:{port}/{safe_path}"
     if request.query_params:
         target_url += f"?{request.query_params}"
@@ -772,6 +777,10 @@ async def proxy_to_agent(agent_id: str, path: str, request: Request):
                 raise ValueError("out of range")
         except (ValueError, TypeError):
             raise HTTPException(status_code=503, detail="Agent has invalid port config")
+        # Defense-in-depth: reject dot segments outright (quote(safe="/")
+        # alone would preserve "..").
+        if any(seg in ("..", ".") for seg in path.split("/")):
+            raise HTTPException(status_code=400, detail="Invalid path")
         target_url = f"http://localhost:{internal_port}/{_url_quote(path, safe='/~')}"
         
         # Forward the request

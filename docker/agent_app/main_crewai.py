@@ -157,10 +157,12 @@ async def _call_llm(task: str, system: str = "") -> str:
     try:
         llm = _get_crewai_llm()
     except RuntimeError as e:
-        # CodeQL py/stack-trace-exposure (#10): config errors are safe to show;
-        # anything else stays out of client responses.
-        msg = str(e)
-        return f"[{AGENT_NAME}] Task received: {task[:200]}. {msg}" if "Connect" in msg or "configure" in msg.lower() else f"[{AGENT_NAME}] Task received: {task[:200]}. (LLM unavailable)"
+        # CodeQL py/stack-trace-exposure (#10): exception text never reaches
+        # clients — operators get the detail in the activity log, callers get
+        # static guidance.
+        from hive_client import sanitize_log_text
+        _log_activity("error", f"LLM config error: {sanitize_log_text(e)}")
+        return f"[{AGENT_NAME}] Task received: {task[:200]}. (No LLM configured — connect one via Hive)"
 
     if not llm:
         return (

@@ -27,7 +27,7 @@ langchain-openai>=1.0.0
 langchain-core>=1.6.0
 langchain-community>=0.3.80
 crewai>=0.86.0
-litellm==1.72.6
+litellm>=1.83.10
 # Transitive security floors (pip-audit)
 json-repair>=0.60.1
 

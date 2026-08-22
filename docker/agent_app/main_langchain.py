@@ -180,7 +180,9 @@ async def _call_llm(task: str, system: str = "") -> str:
 
         if tools:
             try:
-                from langchain.agents import AgentExecutor, create_openai_tools_agent
+                # langchain 1.x moved the legacy executor to
+                # `langchain_classic` (dependabot #44/#45/#51/#54/#61).
+                from langchain_classic.agents import AgentExecutor, create_openai_tools_agent
                 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
                 prompt = ChatPromptTemplate.from_messages([

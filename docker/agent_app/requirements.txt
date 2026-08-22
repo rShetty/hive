@@ -1,17 +1,21 @@
-fastapi==0.115.6
+# Mirrors the proven-compatible set resolved in backend/requirements.txt
+# (dependabot's grouped bump proposed starlette==1.6.0 alongside
+# fastapi==0.115.6, which caps starlette<0.42 — unsatisfiable).
+fastapi==0.141.1
 uvicorn[standard]==0.27.0
-httpx==0.26.0
-python-dotenv==1.0.0
+httpx>=0.28.0
+python-dotenv==1.2.3
 # >=1.3.1: CVE-2025-54121 (form limits DoS), Host-header poisoning fixes,
 # HTTPEndpoint getattr dispatch, UNC-path SSRF (dependabot #57-#60)
-starlette==1.3.1
+starlette==1.6.0
 
-# LangChain framework (langchain-core>=1.3.9 — dependabot #61)
-langchain==0.3.25
-langchain-openai==0.3.12
-langchain-core==0.3.62
+# LangChain stack — floors clear all open GHSA advisories
+# (#44,#45,#51,#54 core; #55/#61 langchain; #52 langchain-openai; #42 community)
+langchain==1.3.16
+langchain-openai==1.6.0
+langchain-core==1.6.0
+langchain-community==0.4.2
 
-# CrewAI framework (litellm>=1.84.0 — dependabot #62-#68)
-crewai==0.86.0
-litellm==1.84.0
-langchain-community==0.3.21
+# CrewAI framework
+crewai>=0.86.0
+litellm==1.97.0

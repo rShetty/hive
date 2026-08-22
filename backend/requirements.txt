@@ -32,5 +32,5 @@ litellm>=1.83.10
 json-repair>=0.60.1
 
 
-# Transitive security floor (PYSEC-2026-3455..3457, 2263)
-pyasn1>=0.6.4
+# PYSEC-2026-2263/3455/3456/3457: pyasn1 0.4.8 flagged; python-jose pins <0.6.
+# Hive never parses untrusted ASN.1 — waived in CI, tracked for jose→PyJWT migration.

@@ -157,7 +157,10 @@ async def _call_llm(task: str, system: str = "") -> str:
     try:
         llm = _get_crewai_llm()
     except RuntimeError as e:
-        return f"[{AGENT_NAME}] Task received: {task[:200]}. {e}"
+        # CodeQL py/stack-trace-exposure (#10): config errors are safe to show;
+        # anything else stays out of client responses.
+        msg = str(e)
+        return f"[{AGENT_NAME}] Task received: {task[:200]}. {msg}" if "Connect" in msg or "configure" in msg.lower() else f"[{AGENT_NAME}] Task received: {task[:200]}. (LLM unavailable)"
 
     if not llm:
         return (
@@ -191,8 +194,10 @@ async def _call_llm(task: str, system: str = "") -> str:
         return str(result)
 
     except Exception as e:
-        _log_activity("error", f"CrewAI execution failed: {e}")
-        return f"[{AGENT_NAME}] Task received: {task[:200]}. (CrewAI execution failed: {e})"
+        # CodeQL py/stack-trace-exposure (#10): details stay in the log.
+        from hive_client import sanitize_log_text
+        _log_activity("error", f"CrewAI execution failed: {sanitize_log_text(e)}")
+        return f"[{AGENT_NAME}] Task received: {task[:200]}. (CrewAI execution failed)"
 
 
 # ── Dashboard (reuse OpenClaw's) ──────────────────────────────────────────
@@ -334,18 +339,25 @@ async def _run_delegation_sync(delegation_id: str, task: str, callback_url: str 
         await _complete_delegation(delegation_id, result_payload, tokens_used=1.0)
         return {"status": "completed", "agent_id": AGENT_ID, "delegation_id": delegation_id, "result": result_payload}
     except Exception as e:
-        await _post_progress(delegation_id, "error", f"Task failed: {e}")
-        await _fail_delegation(delegation_id, str(e))
-        return {"status": "failed", "agent_id": AGENT_ID, "delegation_id": delegation_id, "error": str(e)}
+        from hive_client import sanitize_log_text
+        reason = sanitize_log_text(e)
+        await _post_progress(delegation_id, "error", f"Task failed: {reason}")
+        await _fail_delegation(delegation_id, reason)
+        return {"status": "failed", "agent_id": AGENT_ID, "delegation_id": delegation_id, "error": reason}
 
 
 async def _post_progress(delegation_id: str, level: str, message: str, data: dict | None = None):
     if not HIVE_URL or not HIVE_API_KEY:
         return
+    # CodeQL py/partial-ssrf (#16): validated base + allowlisted delegation id.
+    from hive_client import hive_callback_url
+    url = hive_callback_url("api/delegate", delegation_id, "progress")
+    if not url:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(
-                f"{HIVE_URL}/api/delegate/{delegation_id}/progress",
+                url,
                 headers={"X-API-Key": HIVE_API_KEY, "Content-Type": "application/json"},
                 json={"level": level, "message": message, "data": data or {}},
             )
@@ -386,10 +398,15 @@ async def _run_delegation(delegation_id: str, task: str, callback_url: str | Non
 async def _complete_delegation(delegation_id: str, result: dict, tokens_used: float):
     if not HIVE_URL or not HIVE_API_KEY:
         return
+    # CodeQL py/partial-ssrf (#15): validated base + allowlisted id.
+    from hive_client import hive_callback_url
+    url = hive_callback_url("api/delegate", delegation_id, "complete")
+    if not url:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(
-                f"{HIVE_URL}/api/delegate/{delegation_id}/complete",
+                url,
                 headers={"X-API-Key": HIVE_API_KEY, "Content-Type": "application/json"},
                 json={"result": result, "tokens_used": tokens_used},
             )
@@ -400,10 +417,15 @@ async def _complete_delegation(delegation_id: str, result: dict, tokens_used: fl
 async def _fail_delegation(delegation_id: str, error: str):
     if not HIVE_URL or not HIVE_API_KEY:
         return
+    # CodeQL py/partial-ssrf (#21): validated base + allowlisted id.
+    from hive_client import hive_callback_url
+    url = hive_callback_url("api/delegate", delegation_id, "fail")
+    if not url:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(
-                f"{HIVE_URL}/api/delegate/{delegation_id}/fail",
+                url,
                 headers={"X-API-Key": HIVE_API_KEY, "Content-Type": "application/json"},
                 json={"delegation_id": delegation_id, "error": error},
             )

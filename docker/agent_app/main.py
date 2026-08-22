@@ -316,8 +316,11 @@ async def _call_llm(task: str, system: str = "") -> str:
                     break
             return (msg.get("content") or "").strip()
     except Exception as e:
-        _log_activity("error", f"LLM call failed: {e}")
-        return f"[{AGENT_NAME}] Task received: {task[:200]}. (LLM call failed: {e})"
+        # CodeQL py/stack-trace-exposure (#8): keep details in the activity
+        # log; never echo raw exception text back to HTTP clients.
+        from hive_client import sanitize_log_text
+        _log_activity("error", f"LLM call failed: {sanitize_log_text(e)}")
+        return f"[{AGENT_NAME}] Task received: {task[:200]}. (LLM call failed)"
 
 
 
@@ -827,10 +830,15 @@ async def _post_progress(delegation_id: str, level: str, message: str, data: dic
     """Send a progress update to Hive so it streams out over SSE."""
     if not HIVE_URL or not HIVE_API_KEY:
         return
+    # CodeQL py/partial-ssrf (#18): validated base + allowlisted delegation id.
+    from hive_client import hive_callback_url
+    url = hive_callback_url("api/delegate", delegation_id, "progress")
+    if not url:
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(
-                f"{HIVE_URL}/api/delegate/{delegation_id}/progress",
+                url,
                 headers={"X-API-Key": HIVE_API_KEY, "Content-Type": "application/json"},
                 json={"level": level, "message": message, "data": data or {}},
             )
@@ -867,14 +875,16 @@ async def _run_delegation_sync(delegation_id: str, task: str, callback_url: str 
             "result": result_payload,
         }
     except Exception as e:
-        _log_activity("error", f"Delegation {delegation_id} failed: {e}")
-        await _post_progress(delegation_id, "error", f"Execution failed: {e}")
-        await _fail_delegation(delegation_id, str(e))
+        from hive_client import sanitize_log_text
+        reason = sanitize_log_text(e)
+        _log_activity("error", f"Delegation {delegation_id} failed: {reason}")
+        await _post_progress(delegation_id, "error", f"Execution failed: {reason}")
+        await _fail_delegation(delegation_id, reason)
         return {
             "status": "failed",
             "agent_id": AGENT_ID,
             "delegation_id": delegation_id,
-            "error": str(e),
+            "error": reason,
         }
 
 
@@ -929,10 +939,15 @@ async def _complete_delegation(delegation_id: str, result: dict, tokens_used: fl
     """Call Hive's /complete endpoint (API-key auth) to settle the delegation."""
     if not HIVE_URL or not HIVE_API_KEY:
         return
+    # CodeQL py/partial-ssrf (#17): validated base + allowlisted id.
+    from hive_client import hive_callback_url
+    url = hive_callback_url("api/delegate", delegation_id, "complete")
+    if not url:
+        return
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
-                f"{HIVE_URL}/api/delegate/{delegation_id}/complete",
+                url,
                 headers={"X-API-Key": HIVE_API_KEY, "Content-Type": "application/json"},
                 json={"result": result, "tokens_used": tokens_used},
             )
@@ -946,10 +961,15 @@ async def _fail_delegation(delegation_id: str, reason: str):
     """Call Hive's /fail endpoint so tokens get refunded."""
     if not HIVE_URL or not HIVE_API_KEY:
         return
+    # CodeQL py/partial-ssrf (#19): validated base + allowlisted id.
+    from hive_client import hive_callback_url
+    url = hive_callback_url("api/delegate", delegation_id, "fail")
+    if not url:
+        return
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             await client.post(
-                f"{HIVE_URL}/api/delegate/{delegation_id}/fail",
+                url,
                 headers={"X-API-Key": HIVE_API_KEY},
                 params={"reason": reason[:200]},
             )

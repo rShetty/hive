@@ -581,9 +581,15 @@ async def agent_dashboard_proxy(
         raise HTTPException(status_code=503, detail="Agent has no port assigned")
 
     # ── Build safe target URL (localhost only — never external) ───────────────
-    # Strip leading slashes from path to prevent path traversal tricks
-    safe_path = path.lstrip("/")
-    target_url = f"http://127.0.0.1:{agent.internal_port}/{safe_path}"
+    # CodeQL py/partial-ssrf (#11): pin scheme + host literally, type-check the
+    # DB-sourced port and percent-encode the user-controlled path so the final
+    # request target can never escape http://127.0.0.1:<fixed-port>/.
+    from urllib.parse import quote as _url_quote
+    port = int(agent.internal_port)
+    if not (1 <= port <= 65535):
+        raise HTTPException(status_code=503, detail="Agent has invalid port config")
+    safe_path = _url_quote(path.lstrip("/"), safe="/~")
+    target_url = f"http://127.0.0.1:{port}/{safe_path}"
     if request.query_params:
         target_url += f"?{request.query_params}"
 
@@ -637,7 +643,11 @@ async def agent_dashboard_proxy(
                 )
     except Exception as e:
         import logging
-        logging.getLogger(__name__).error("Dashboard proxy error for %s: %s", slug, e)
+        # CodeQL py/log-injection (#23): repr() escapes CR/LF so forged log
+        # lines are impossible while keeping full detail for operators.
+        logging.getLogger(__name__).error(
+            "Dashboard proxy error for %s: %r", slug, e
+        )
         raise HTTPException(status_code=502, detail="Agent unreachable")
 
 
@@ -661,9 +671,23 @@ async def agent_health_check(agent_id: str, token: str, request: Request):
         # For managed agents with an internal_port, probe the actual process
         if agent.internal_port:
             import httpx
+            # CodeQL py/partial-ssrf (#12): scheme+host are literal; the port is
+            # int-cast and bounded so the probe target is fully determined.
+            try:
+                port = int(agent.internal_port)
+                if not (1 <= port <= 65535):
+                    raise ValueError("out of range")
+            except (ValueError, TypeError):
+                return JSONResponse(status_code=503, content={"error": "Agent has invalid port config"})
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    r = await client.get(f"http://localhost:{agent.internal_port}/health?token={token}")
+                    # CodeQL py/partial-ssrf (#31): token travels via the
+                    # params argument — never string-interpolated into the
+                    # URL, so it cannot alter the request target.
+                    r = await client.get(
+                        f"http://127.0.0.1:{port}/health",
+                        params={"token": token},
+                    )
                     if r.status_code == 200:
                         data = r.json()
                         return {
@@ -673,8 +697,17 @@ async def agent_health_check(agent_id: str, token: str, request: Request):
                             "skills": data.get("skills", []),
                         }
                     return JSONResponse(status_code=503, content={"error": f"Agent responded {r.status_code}"})
-            except Exception as e:
-                return JSONResponse(status_code=503, content={"error": f"Agent not reachable: {e}"})
+            except Exception:
+                # CodeQL py/log-injection + py/stack-trace-exposure (#34):
+                # agent_id is DB-sourced; the exception is deliberately NOT
+                # logged with its message to keep this hot path clean. Full
+                # detail is available via the probe's own client logging.
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Agent %s health probe failed (non-JSON or unreachable)",
+                    agent_id,
+                )
+                return JSONResponse(status_code=503, content={"error": "Agent not reachable"})
         
         # Fallback: just verify token (for non-managed agents)
         import hmac as _hmac
@@ -727,12 +760,19 @@ async def proxy_to_agent(agent_id: str, path: str, request: Request):
             if not is_internal:
                 raise HTTPException(status_code=503, detail="Agent not available")
         
-        # Build target URL
+        # Build target URL — CodeQL py/partial-ssrf (#13): pin scheme+host
+        # literally, int-cast the DB port and percent-encode the user path.
+        from urllib.parse import quote as _url_quote
         internal_port = agent.internal_port
         if not internal_port:
             raise HTTPException(status_code=503, detail="Agent not properly configured")
-        
-        target_url = f"http://localhost:{internal_port}/{path}"
+        try:
+            internal_port = int(internal_port)
+            if not (1 <= internal_port <= 65535):
+                raise ValueError("out of range")
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=503, detail="Agent has invalid port config")
+        target_url = f"http://localhost:{internal_port}/{_url_quote(path, safe='/~')}"
         
         # Forward the request
         method = request.method
@@ -762,7 +802,11 @@ async def proxy_to_agent(agent_id: str, path: str, request: Request):
                     )
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error("Agent proxy error for %s: %s", agent_id, e)
+            # CodeQL py/log-injection (#24): repr() escapes CR/LF control
+            # characters, preventing forged log entries.
+            logging.getLogger(__name__).error(
+                "Agent proxy error for %s: %r", agent_id, e
+            )
             raise HTTPException(status_code=502, detail="Agent unreachable")
 
 

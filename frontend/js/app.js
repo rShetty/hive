@@ -73,7 +73,17 @@ async function refreshAccessToken() {
 }
 
 // ---- API helpers ----
+// CodeQL js/client-side-request-forgery (#26): only same-origin relative
+// paths may be fetched. Absolute URLs, protocol-relative and scheme-bearing
+// inputs are rejected so a poisoned value can't pivot requests off-origin.
+function _assertApiPath(path) {
+    if (typeof path !== "string" || !path.startsWith("/")) {
+        throw new Error("apiFetch: only relative same-origin API paths are allowed");
+    }
+}
+
 async function apiFetch(path, options = {}, _isRetry = false) {
+    _assertApiPath(path);
     const headers = { ...authHeaders(), ...(options.headers || {}) };
     const res = await fetch(path, { ...options, headers, credentials: 'include' });
 

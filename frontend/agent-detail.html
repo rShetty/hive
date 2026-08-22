@@ -168,7 +168,13 @@
                     }
 
                     try {
-                        const res = await fetch(`/api/agents/${agentId}`);
+                        // CodeQL js/client-side-request-forgery (#25): the id
+                        // must be a plain identifier — encode it so injected
+                        // path/URL syntax can't retarget the request.
+                        if (!/^[A-Za-z0-9_-]{1,64}$/.test(agentId)) {
+                            throw new Error("invalid agent id");
+                        }
+                        const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`);
                         if (res.ok) {
                             this.agent = await res.json();
 

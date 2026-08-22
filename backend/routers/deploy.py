@@ -537,7 +537,13 @@ async def deploy_openclaw_agent(
                 hive_domain=os.getenv("HIVE_DOMAIN", ""),
             )
         except Exception as e:
-            result = {"success": False, "message": str(e)}
+            # CodeQL (#7 follow-up): sanitize before surfacing — container
+            # creation errors can embed env/paths/internal hostnames.
+            import logging
+            logging.getLogger(__name__).error(
+                "OpenClaw container create failed for agent %s: %s", agent.id, e
+            )
+            result = {"success": False, "message": "Container deployment failed. Check server logs."}
         else:
             agent.container_id = container_id
             agent.internal_port = assigned_port
@@ -798,9 +804,11 @@ async def deploy_hosted_agent(
         agent.status = AgentStatus.ERROR.value
         agent.container_id = None
         await db.commit()
+        # CodeQL py/stack-trace-exposure (#7): keep the reason server-side —
+        # spawn errors can embed env/paths/internal hostnames.
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to start agent runtime: {e}",
+            detail="Failed to start agent runtime. Check server logs for details.",
         )
 
     dashboard_url = f"/a/{slug}/"

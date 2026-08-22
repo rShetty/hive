@@ -31,3 +31,6 @@ litellm>=1.83.10
 # Transitive security floors (pip-audit)
 json-repair>=0.60.1
 
+
+# Transitive security floor (PYSEC-2026-3455..3457, 2263)
+pyasn1>=0.6.4

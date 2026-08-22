@@ -200,16 +200,15 @@ jobs:
 
       # Mirrors local verification: reuse .venv-enterprise when present,
       # otherwise build it fresh from backend/requirements.txt.
-      - name: Prepare .venv-enterprise (reuse if present, else install from requirements)
+      - name: Create .venv-enterprise
         run: |
-          if [ -x ".venv-enterprise/bin/python" ]; then
-            echo "Reusing existing .venv-enterprise interpreter"
-          else
-            echo "No .venv-enterprise found — creating one from backend/requirements.txt"
-            python -m venv .venv-enterprise
-            .venv-enterprise/bin/python -m pip install --upgrade pip
-            .venv-enterprise/bin/python -m pip install -r backend/requirements.txt
-          fi
+          set -e
+          python -m venv .venv-enterprise
+          .venv-enterprise/bin/python -m pip install --upgrade pip
+      - name: Install backend dependencies
+        run: |
+          set -e
+          .venv-enterprise/bin/python -m pip install -r backend/requirements.txt
 
       - name: Byte-compile backend sources (python -m compileall)
         run: .venv-enterprise/bin/python -m compileall backend

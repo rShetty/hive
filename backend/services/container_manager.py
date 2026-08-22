@@ -6,14 +6,52 @@ from typing import Optional
 # Docker client - lazy initialization
 docker_client = None
 
+
+class DockerUnavailableError(RuntimeError):
+    """Raised when the Docker endpoint is required but not reachable.
+
+    Hive never mounts /var/run/docker.sock directly (see docs/HLD/
+    07-deployment.md); instead DOCKER_HOST points at a docker-socket-proxy or
+    remote daemon. When that endpoint is configured but unreachable this error
+    surfaces immediately instead of silently degrading to local subprocesses.
+    """
+
+
+def _docker_required() -> bool:
+    """True when operators opted into Docker mode for this instance.
+
+    Set via HIVE_REQUIRE_DOCKER=1 or by configuring an explicit DOCKER_HOST
+    (e.g. tcp://docker-socket-proxy:2375). In that mode a missing/unreachable
+    endpoint is a hard error, not a silent fallback.
+    """
+    return bool(
+        os.getenv("HIVE_REQUIRE_DOCKER", "").lower() in ("1", "true", "yes")
+        or os.getenv("DOCKER_HOST")
+    )
+
+
 def get_docker_client():
-    """Get or create Docker client."""
+    """Get or create Docker client.
+
+    Returns None only when Docker is genuinely unavailable AND not required
+    (dev fallback: agents run as local subprocesses). Raises
+    DockerUnavailableError when ``_docker_required()`` is true so callers fail
+    loudly instead of silently degrading.
+    """
     global docker_client
     if docker_client is None:
         try:
             import docker
             docker_client = docker.from_env()
         except Exception as e:
+            if _docker_required():
+                raise DockerUnavailableError(
+                    "Docker endpoint unavailable "
+                    f"(DOCKER_HOST={os.getenv('DOCKER_HOST') or '<unset>'!r}): {e}. "
+                    "HIVE_REQUIRE_DOCKER/DOCKER_HOST is set, so agent containers "
+                    "cannot be created. Ensure the docker-socket-proxy (or remote "
+                    "daemon) is reachable — see docs/HLD/07-deployment.md."
+                ) from e
             print(f"Warning: Docker not available: {e}")
             return None
     return docker_client
@@ -106,7 +144,10 @@ def create_container(
                 "hive/agent-id": agent_id,
                 "hive/agent-name": agent_name,
                 "hive/managed": "true"
-            }
+            },
+            # Hardening: resource limits, cap drop, no-new-privileges,
+            # (optionally) read-only rootfs — see build_agent_container_limits().
+            **build_agent_container_limits(),
         )
         return container.id, port
     except Exception as e:
@@ -195,6 +236,59 @@ def get_container_status(container_id: str) -> str:
 
 OPENCLAW_IMAGE = os.getenv("OPENCLAW_IMAGE", "openclaw/openclaw:latest")
 OPENCLAW_INTERNAL_PORT = 8080
+
+
+# ── Container hardening defaults (issue #6) ──────────────────────────────────
+# All values configurable via env with sane least-privilege defaults.
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _read_only_rootfs_default() -> bool:
+    return os.getenv("AGENT_READ_ONLY_ROOTFS", "1").lower() not in ("0", "false", "no")
+
+
+def build_agent_container_limits() -> dict:
+    """Build the hardened runtime kwargs passed to ``containers.run``.
+
+    Returns resource limits (CPU/mem/pids), capability drop, no-new-privileges
+    and an optional read-only rootfs. Pure function of the environment so it
+    can be unit-tested without a Docker daemon.
+    """
+    kwargs: dict = {
+        # Resource limits — prevent a runaway/compromised agent from starving
+        # the host or fork-bombing it.
+        "nano_cpus": int(_env_float("AGENT_CPU_LIMIT", 0.5) * 1e9),
+        "mem_limit": os.getenv("AGENT_MEM_LIMIT", "256m"),
+        "pids_limit": _env_int("AGENT_PIDS_LIMIT", 128),
+        # Drop ALL Linux capabilities; operators may re-add specific ones via
+        # AGENT_ADDED_CAPS (comma-separated) when an image genuinely needs one.
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+    }
+    added_caps = [
+        c.strip() for c in os.getenv("AGENT_ADDED_CAPS", "").split(",") if c.strip()
+    ]
+    if added_caps:
+        kwargs["cap_add"] = added_caps
+
+    # Read-only root filesystem with a small writable tmpfs at /tmp. Disable
+    # with AGENT_READ_ONLY_ROOTFS=0 for images that must write to their own fs.
+    if _read_only_rootfs_default():
+        kwargs["read_only"] = True
+        kwargs["tmpfs"] = {"/tmp": "rw,nosuid,size=64m"}
+    return kwargs
 
 
 def create_openclaw_container(
@@ -300,6 +394,9 @@ def create_openclaw_container(
             detach=True,
             restart_policy={"Name": "unless-stopped"},
             labels=labels,
+            # Hardening: resource limits, cap drop, no-new-privileges,
+            # (optionally) read-only rootfs — see build_agent_container_limits().
+            **build_agent_container_limits(),
         )
         return container.id, port
     except Exception as e:

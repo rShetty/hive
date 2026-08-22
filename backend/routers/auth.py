@@ -12,8 +12,15 @@ from auth import (
     verify_password, get_password_hash, create_access_token, get_current_active_user,
     create_refresh_token, decode_refresh_token, revoke_token, _decode_token,
     REFRESH_COOKIE_NAME, REFRESH_TOKEN_EXPIRE_DAYS, COOKIE_SECURE,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from middleware.rate_limit import limiter, RATE_LIMITS
+
+# Issue #11: the browser-facing session cookie is httpOnly and short-lived
+# (matches the access-token lifetime). JavaScript can never read it; the agent
+# dashboard proxy (main.py) still can, server-side. The long-lived credential
+# is exclusively the `hive_refresh` cookie, which is httpOnly as well.
+SESSION_COOKIE_NAME = "hive_session"
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 security = HTTPBearer()
@@ -67,15 +74,26 @@ async def register(request: Request, user_data: UserCreate, db: AsyncSession = D
 @limiter.limit(RATE_LIMITS["auth_login"])
 async def login(request: Request, response: Response, login_data: LoginRequest, db: AsyncSession = Depends(get_db)):
     """Login — returns a short-lived access token and sets a long-lived refresh cookie."""
+    # Per-username lockout backoff (brute-force protection on top of the
+    # per-IP rate limit). Failures within the window accumulate; once the
+    # threshold is hit, attempts are rejected until the window expires.
+    from services.login_lockout import assert_not_locked_out as _assert_not_locked_out_impl
+    _assert_not_locked_out_impl(login_data.email)
+
     result = await db.execute(select(User).where(User.email == login_data.email))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(login_data.password, user.hashed_password):
+        from services.login_lockout import record_failure as _record_failure_impl
+        _record_failure_impl(login_data.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    from services.login_lockout import clear as _clear_failures_impl
+    _clear_failures_impl(login_data.email)
 
     access_token = create_access_token(data={"sub": user.id})
     refresh_token = create_refresh_token(user.id)
@@ -90,16 +108,18 @@ async def login(request: Request, response: Response, login_data: LoginRequest, 
         path="/api/auth",  # cookie only sent to auth endpoints
     )
 
-    # Non-httpOnly session cookie used by the agent dashboard proxy (/a/{slug}/).
-    # It carries the same access token that lives in localStorage — no additional
-    # secret is exposed. Path is "/" so the proxy middleware can read it.
+    # Issue #11: short-lived httpOnly session cookie for the agent dashboard
+    # proxy (/a/{slug}/). JavaScript cannot read it; the proxy validates it
+    # server-side and the frontend silently refreshes via /api/auth/refresh
+    # when the access token it holds in memory expires. The long-lived
+    # credential remains the httpOnly `hive_refresh` cookie only.
     response.set_cookie(
-        key="hive_token",
+        key=SESSION_COOKIE_NAME,
         value=access_token,
-        httponly=False,
+        httponly=True,
         secure=COOKIE_SECURE,
         samesite="lax",
-        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,  # long-lived; proxy refreshes token when needed
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
 
@@ -145,12 +165,12 @@ async def refresh_access_token(
         path="/api/auth",
     )
     response.set_cookie(
-        key="hive_token",
+        key=SESSION_COOKIE_NAME,
         value=new_access_token,
-        httponly=False,
+        httponly=True,
         secure=COOKIE_SECURE,
         samesite="lax",
-        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
 
@@ -183,7 +203,7 @@ async def logout(
             pass
 
     response.delete_cookie(key=REFRESH_COOKIE_NAME, path="/api/auth")
-    response.delete_cookie(key="hive_token", path="/")
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
     return {"message": "Logged out"}
 
 

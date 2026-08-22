@@ -76,7 +76,13 @@
                 const data = await res.json();
 
                 if (res.ok) {
-                    localStorage.setItem('token', data.access_token);
+                    // Issue #11: access token is kept in memory only; the
+                    // httpOnly refresh cookie issued alongside it restores the
+                    // session on reload.
+                    setToken(data.access_token);
+                    // Best-effort removal of the legacy persisted token.
+                    localStorage.removeItem('token');
+                    sessionStorage.removeItem('token');
                     window.location.href = '/';
                 } else {
                     let errorMsg = 'Login failed';

@@ -521,6 +521,9 @@
                 _seenTimestamps: new Set(),
 
                 async init() {
+                    // Issue #11: restore the in-memory token via the httpOnly
+                    // refresh cookie before deciding auth state.
+                    await restoreSession();
                     if (!isAuthenticated()) {
                         window.location.href = '/login?next=/workflows/new';
                         return;

@@ -93,7 +93,10 @@
 
                     const loginData = await loginRes.json();
                     if (loginRes.ok) {
-                        localStorage.setItem('token', loginData.access_token);
+                        // Issue #11: memory-only access token (see app.js).
+                        setToken(loginData.access_token);
+                        localStorage.removeItem('token');
+                        sessionStorage.removeItem('token');
                         window.location.href = '/';
                     }
                 } else {

@@ -640,6 +640,9 @@
             skillError: '',
 
             async init() {
+                // Issue #11: restore the in-memory token via the httpOnly
+                // refresh cookie before deciding auth state.
+                await restoreSession();
                 const params = new URLSearchParams(window.location.search);
                 this.agentId = params.get('id');
                 if (!this.agentId) {
@@ -648,7 +651,7 @@
                     return;
                 }
 
-                const token = localStorage.getItem('token');
+                const token = getToken();
                 if (!token) {
                     window.location.href = '/login';
                     return;

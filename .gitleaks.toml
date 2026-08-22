@@ -4,7 +4,7 @@ title = "hive gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "Allow documentation placeholders, test fixtures, and historical commits containing non-secret examples."
+description = "Documentation placeholders and test fixtures ONLY. Historical commits are NOT exempted: any secret found in history must be rotated (see docs/security/KEY_ROTATION.md), never allowlisted."
 
 paths = [
   '''docs/.*\.md''',
@@ -24,10 +24,4 @@ regexes = [
   '''EXECUTING_AGENT_API_KEY''',
   '''eyJ0eXAiOiJKV1QiLCJhbGci\.\.\.''',
   '''\*\*\*;3;m''',
-]
-
-commits = [
-  "4c2d4c48f8b11dcad4692ba3f1042b0462c27a8b",
-  "87dc5276f1603499168baedfab495743195c5338",
-  "479ef294764bc94d0132c113bc4e48448b5e3f64",
 ]

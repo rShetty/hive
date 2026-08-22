@@ -46,12 +46,28 @@ def _accessible_server(server: MCPServer, user: User) -> bool:
 
 
 def _validate_url(url: str):
+    """Validate an MCP server URL for server-side fetching (issue #17).
+
+    Beyond the http/https scheme check, blocks destinations on loopback,
+    private or link-local ranges (cloud metadata 169.254.169.254 included).
+    The backend contacts these URLs during OAuth discovery, token exchange
+    and refresh — an unvalidated URL is a stored SSRF.
+    """
     from urllib.parse import urlparse
+    from services.url_guard import validate_public_http_url
+
     p = urlparse(url)
     if p.scheme not in ("http", "https"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="MCP server URL must start with http:// or https://",
+        )
+    try:
+        validate_public_http_url(url)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"MCP server URL rejected: {e}",
         )
 
 

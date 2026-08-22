@@ -84,14 +84,16 @@
                 message: '',
                 messageClass: '',
                 
-                init() {
+                async init() {
+                    // Issue #11: restore the in-memory token via the httpOnly
+                    // refresh cookie before deciding auth state.
+                    await restoreSession();
                     this.checkAuth();
                     this.loadUser();
                 },
                 
                 checkAuth() {
-                    const token = localStorage.getItem('token');
-                    if (!token) {
+                    if (!isAuthenticated()) {
                         window.location.href = '/login';
                     }
                 },

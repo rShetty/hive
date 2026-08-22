@@ -158,14 +158,17 @@
                 deadAgents: [],
 
                 init() {
-                    this.checkAuth();
+                    // Issue #11: restore the in-memory token via the httpOnly
+                    // refresh cookie before deciding auth state.
+                    restoreSession().then(() => this.checkAuth());
                     this.loadStats();
                     this.loadFeaturedAgents();
                 },
 
                 checkAuth() {
-                    const token = localStorage.getItem('token');
-                    this.isAuthenticated = !!token;
+                    // Issue #11: in-memory token, restored via the httpOnly
+                    // refresh cookie on reload (see app.js restoreSession()).
+                    this.isAuthenticated = isAuthenticated();
                 },
 
                 logout() { logout(); },

@@ -2,9 +2,19 @@
  * Hive 🐝 — shared frontend utilities.
  */
 
-// ---- Auth helpers ----
+// ---- Auth helpers (issue #11) ----
+// The access token lives ONLY in memory (never localStorage, never a
+// JS-readable cookie — the backend's hive_session cookie is httpOnly). On
+// page reload the session is restored silently by exchanging the httpOnly
+// `hive_refresh` cookie at /api/auth/refresh.
+let _accessToken = null;
+
 function getToken() {
-    return localStorage.getItem('token');
+    return _accessToken;
+}
+
+function setToken(token) {
+    _accessToken = token || null;
 }
 
 function authHeaders() {
@@ -16,9 +26,19 @@ function isAuthenticated() {
     return !!getToken();
 }
 
+/**
+ * Restore the session after a page reload: exchange the httpOnly refresh
+ * cookie for a fresh access token held in memory only. Resolves to true when
+ * a session exists.
+ */
+async function restoreSession() {
+    if (_accessToken) return true;
+    return refreshAccessToken();
+}
+
 function logout() {
-    localStorage.removeItem('token');
-    // Fire-and-forget: clear the httpOnly refresh cookie server-side
+    setToken(null);
+    // Fire-and-forget: revoke tokens and clear the httpOnly cookies server-side
     fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     window.location.href = '/login';
 }
@@ -38,7 +58,7 @@ async function refreshAccessToken() {
             });
             if (res.ok) {
                 const data = await res.json();
-                localStorage.setItem('token', data.access_token);
+                setToken(data.access_token); // memory only — never persisted
                 return true;
             }
             return false;

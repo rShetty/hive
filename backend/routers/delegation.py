@@ -210,6 +210,27 @@ def _internal_endpoint_for(openclaw_instance_id: str | None, endpoint_url: str |
         return f"http://openclaw-{openclaw_instance_id[:8]}:9000"
     return endpoint_url
 
+
+def _validated_target_endpoint(endpoint_url: str | None) -> str | None:
+    """Re-check a stored agent endpoint before the backend contacts it.
+
+    Issue #17 (SSRF): registration-time validation can be bypassed by rows
+    created before the guard existed or by direct DB writes. Delegation
+    dispatch POSTs task payloads (and signed delegation context) to this
+    URL, so it must never target loopback/private/link-local space.
+    """
+    if not endpoint_url:
+        return endpoint_url
+    # Relative paths (managed agents) are served by Hive itself — no check.
+    if endpoint_url.startswith("/"):
+        return endpoint_url
+    from services.url_guard import validate_public_http_url
+    try:
+        return validate_public_http_url(endpoint_url)
+    except ValueError:
+        return None
+
+
 async def _execute_delegation_task(
     delegation_id: str,
     target_endpoint: str,
@@ -235,6 +256,15 @@ async def _execute_delegation_task(
         "info",
         f"Dispatching to {target_agent_name}",
     )
+    # Issue #17 (SSRF): never dispatch to a non-public endpoint.
+    target_endpoint = _validated_target_endpoint(target_endpoint)
+    if not target_endpoint:
+        await _mark_failed(
+            delegation_id, "invalid_target",
+            "Target agent endpoint is missing or not allowed "
+            "(private/loopback URLs are blocked)",
+        )
+        return
     await add_delegation_log(
         delegation_id,
         "info",

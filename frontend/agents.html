@@ -139,15 +139,17 @@
                     skill_id: ''
                 },
                 
-                init() {
+                async init() {
+                    // Issue #11: restore the in-memory token via the httpOnly
+                    // refresh cookie before deciding auth state.
+                    await restoreSession();
                     this.checkAuth();
                     this.loadSkills();
                     this.loadAgents();
                 },
                 
                 checkAuth() {
-                    const token = localStorage.getItem('token');
-                    this.isAuthenticated = !!token;
+                    this.isAuthenticated = isAuthenticated();
                 },
                 
                 logout() { logout(); },

@@ -10,24 +10,49 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-your-encryption-key-change-in-production}
       - AGENT_IMAGE=hermes-agent:latest
       - MARKETPLACE_URL=http://localhost:8000
+      # Point at a docker-socket-proxy or remote daemon instead of mounting
+      # /var/run/docker.sock (host-level access). Leave empty in dev to run
+      # agents as local subprocesses. See docs/HLD/07-deployment.md.
+      - DOCKER_HOST=${DOCKER_HOST:-}
+      # Set to 1 to fail fast instead of falling back to local-subprocess
+      # agents when the Docker endpoint is unreachable.
+      - HIVE_REQUIRE_DOCKER=${HIVE_REQUIRE_DOCKER:-0}
     volumes:
       - ./data:/data
-      # WARNING: Docker socket grants host-level access. Use a socket proxy in production.
+    networks:
+      - agent-marketplace
+    restart: unless-stopped
+
+  # Optional: read-only Docker API proxy. The platform container talks to it
+  # via DOCKER_HOST=tcp://docker-socket-proxy:2375 — the host socket is never
+  # mounted into Hive itself.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - NETWORKS=1
+      - POST=1
+      - VOLUMES=0
+      - EXEC=0
+      - ALLOW_RESTARTS=0
+    volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - agent-marketplace
     restart: unless-stopped
+    profiles:
+      - with-docker
 
   # Optional: Traefik reverse proxy
   traefik:
     image: traefik:v3.0
     command:
       - "--providers.docker=true"
+      - "--providers.docker.endpoint=tcp://docker-socket-proxy:2375"
       - "--entrypoints.web.address=:80"
     ports:
       - "80:80"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - agent-marketplace
     profiles:

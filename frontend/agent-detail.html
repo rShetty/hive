@@ -136,17 +136,18 @@
                 logs: '',
                 
                 init() {
-                    this.checkAuth();
+                    // Issue #11: restore the in-memory token via the httpOnly
+                    // refresh cookie before deciding auth state.
+                    restoreSession().then(() => this.checkAuth());
                     this.loadAgent();
                 },
                 
                 checkAuth() {
-                    const token = localStorage.getItem('token');
-                    this.isAuthenticated = !!token;
+                    this.isAuthenticated = isAuthenticated();
                 },
                 
                 logout() {
-                    localStorage.removeItem('token');
+                    logout();
                     this.isAuthenticated = false;
                     window.location.href = '/';
                 },
@@ -224,7 +225,7 @@
                 async restartAgent() {
                     this.restarting = true;
                     try {
-                        const token = localStorage.getItem('token');
+                        const token = getToken();
                         await fetch(`/api/agents/${this.agent.id}/restart`, {
                             method: 'POST',
                             headers: { 'Authorization': `Bearer ${token}` }
@@ -241,7 +242,7 @@
                     if (!confirm('Are you sure you want to delete this agent?')) return;
                     
                     try {
-                        const token = localStorage.getItem('token');
+                        const token = getToken();
                         await fetch(`/api/agents/${this.agent.id}`, {
                             method: 'DELETE',
                             headers: { 'Authorization': `Bearer ${token}` }
@@ -255,7 +256,7 @@
                 async loadLogs() {
                     this.loadingLogs = true;
                     try {
-                        const token = localStorage.getItem('token');
+                        const token = getToken();
                         const res = await fetch(`/api/agents/${this.agent.id}/logs`, {
                             headers: { 'Authorization': `Bearer ${token}` }
                         });

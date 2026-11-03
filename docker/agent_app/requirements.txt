@@ -18,4 +18,4 @@ langchain-community==0.4.2
 
 # CrewAI framework
 crewai>=0.86.0
-litellm==1.97.0
+litellm==1.109.0.dev1
